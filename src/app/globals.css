@@ -1,26 +1,324 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
+/*
+ * O modo escuro responde a classe `.dark` no html, e nao apenas a preferencia do
+ * sistema, porque a interface tem um botao proprio de alternar. O tema inicial e
+ * aplicado antes da primeira pintura por um script no layout, para nao piscar
+ * branco ao carregar no escuro.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  /* Verde da marca, usado no botao de buscar e nas acoes principais. */
+  --color-marca-50: #f0fdf4;
+  --color-marca-100: #dcfce7;
+  --color-marca-200: #bbf7d0;
+  --color-marca-400: #4ade80;
+  --color-marca-500: #22c55e;
+  --color-marca-600: #16a34a;
+  --color-marca-700: #15803d;
+  --color-marca-800: #166534;
+
+  /*
+   * Verde do WhatsApp. Fica com texto ESCURO em cima, nao branco: branco sobre
+   * #25d366 da 1,98:1, muito abaixo do minimo de 4,5:1 do WCAG AA, e este e um
+   * botao que se clica centenas de vezes por semana. Texto escuro sobre o mesmo
+   * verde passa com folga e preserva o verde exato da marca, que e o que faz
+   * voce reconhecer o botao sem ler.
+   */
+  --color-zap: #25d366;
+  --color-zap-escuro: #128c7e;
+  --color-zap-texto: #0b2e18;
+
+  /*
+   * Cores das faixas de lead. Sao as mesmas do mapa e dos badges, e espelham
+   * COR_FAIXA em src/lib/scoring/score.ts. Mudar aqui exige mudar la.
+   */
+  --color-faixa-muito-bom: #dc2626;
+  --color-faixa-bom: #f97316;
+  --color-faixa-intermediario: #eab308;
+  --color-faixa-ruim: #9ca3af;
+}
+
+/*
+ * Cores de dado do painel.
+ *
+ * Cada passo do tema escuro foi escolhido para a superficie escura, e nao gerado
+ * por clareamento do tema claro. Verde e vermelho aqui nunca carregam sentido
+ * sozinhos: medidos em OKLab eles ficam a 4,2 sob deuteranopia no claro e 1,1 no
+ * escuro, ou seja, indistinguiveis para daltonismo vermelho-verde. Todo bloco de
+ * resultado leva icone e rotulo junto.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --dado-perda: #d03b3b;
+  --dado-tecnica: #b45309;
+}
+
+.dark {
+  --dado-perda: #f87171;
+  --dado-tecnica: #fbbf24;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-dado-perda: var(--dado-perda);
+  --color-dado-tecnica: var(--dado-tecnica);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/*
+ * Tokens de superficie. Cada um e definido no :root claro e redefinido no escuro,
+ * nunca somente dentro do bloco escuro.
+ *
+ * Os valores de texto foram medidos contra cada superficie, e nao escolhidos por
+ * aparencia. O minimo e 4,5:1 (WCAG 2.2 AA para texto normal), porque quase todo
+ * texto secundario aqui e pequeno: endereco, contador, data, dica.
+ *
+ * `--texto-fraco` era #94a3b8 e dava 2,56:1 sobre branco. Reprovava em toda
+ * superficie clara, e era justamente a cor de endereco de lead e de contador.
+ */
+:root {
+  color-scheme: light;
+  --fundo-app: #eef2f6;
+  --superficie: #ffffff;
+  --superficie-2: #f8fafc;
+  --superficie-3: #f1f5f9;
+  --borda: #e2e8f0;
+  --borda-forte: #cbd5e1;
+  /* Borda de campo de formulario: e o limite visual do controle, entao precisa
+     dos 3:1 do WCAG 1.4.11. As bordas decorativas acima sao isentas. */
+  --borda-campo: #748296;
+  --texto: #0f172a;
+  --texto-suave: #475569;
+  --texto-fraco: #5b6779;
+  --sombra-cartao: 0 1px 2px rgb(15 23 42 / 0.06), 0 1px 3px rgb(15 23 42 / 0.04);
+  --sombra-flutuante: 0 4px 16px rgb(15 23 42 / 0.1), 0 1px 3px rgb(15 23 42 / 0.06);
+}
+
+.dark {
+  color-scheme: dark;
+  --fundo-app: #020617;
+  --superficie: #0f172a;
+  --superficie-2: #16213a;
+  --superficie-3: #1e293b;
+  --borda: #1e293b;
+  --borda-forte: #334155;
+  --borda-campo: #64748b;
+  --texto: #f1f5f9;
+  --texto-suave: #cbd5e1;
+  /* No escuro o antigo #7c8da5 dava 4,33:1 sobre superficie-3, abaixo do piso. */
+  --texto-fraco: #94a3b8;
+  --sombra-cartao: 0 1px 2px rgb(0 0 0 / 0.4);
+  --sombra-flutuante: 0 4px 16px rgb(0 0 0 / 0.5);
+}
+
+@theme inline {
+  --color-fundo-app: var(--fundo-app);
+  --color-superficie: var(--superficie);
+  --color-superficie-2: var(--superficie-2);
+  --color-superficie-3: var(--superficie-3);
+  --color-borda: var(--borda);
+  --color-borda-forte: var(--borda-forte);
+  --color-borda-campo: var(--borda-campo);
+  --color-texto: var(--texto);
+  --color-texto-suave: var(--texto-suave);
+  --color-texto-fraco: var(--texto-fraco);
+}
+
+html,
+body {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--fundo-app);
+  color: var(--texto);
+  font-family: var(--font-sans);
+  overscroll-behavior: none;
+  /* Elimina o atraso de 300ms do double-tap no toque. */
+  touch-action: manipulation;
+  /* O realce padrao do toque no Android e um retangulo azul que ignora o raio
+     do botao. Definido de proposito em vez de deixado no default. */
+  -webkit-tap-highlight-color: rgb(22 163 74 / 0.15);
+}
+
+/* Link de atalho para o teclado: some do fluxo visual, aparece ao receber foco. */
+.pular-para-conteudo {
+  position: fixed;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--superficie);
+  color: var(--texto);
+  font-size: 0.875rem;
+  font-weight: 600;
+  box-shadow: var(--sombra-flutuante);
+  transform: translateY(-200%);
+}
+
+.pular-para-conteudo:focus-visible {
+  transform: translateY(0);
+}
+
+/* Modal e drawer: a rolagem interna nao vaza para a pagina de tras. */
+.contem-rolagem {
+  overscroll-behavior: contain;
+}
+
+/* Foco visivel e consistente em tudo que e operavel pelo teclado. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-marca-600);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.dark :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline-color: var(--color-marca-400);
+}
+
+/* Barra de rolagem discreta na sidebar e nas listas longas. */
+.rolagem-fina {
+  scrollbar-width: thin;
+  scrollbar-color: var(--borda-forte) transparent;
+}
+
+.rolagem-fina::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.rolagem-fina::-webkit-scrollbar-thumb {
+  background: var(--borda-forte);
+  border-radius: 999px;
+}
+
+.rolagem-fina::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/*
+ * Leaflet
+ *
+ * O mapa vem com estilos proprios de fundo branco e fonte, entao precisa de
+ * ajuste para nao brigar com o tema escuro.
+ */
+.leaflet-container {
+  background: var(--superficie-3);
+  font-family: var(--font-sans);
+  z-index: 0;
+}
+
+.leaflet-control-zoom a,
+.leaflet-bar a {
+  background: var(--superficie);
+  color: var(--texto);
+  border-color: var(--borda);
+}
+
+.leaflet-control-zoom a:hover,
+.leaflet-bar a:hover {
+  background: var(--superficie-3);
+  color: var(--texto);
+}
+
+.leaflet-control-attribution {
+  background: color-mix(in srgb, var(--superficie) 85%, transparent) !important;
+  color: var(--texto-fraco) !important;
+  font-size: 10px;
+}
+
+.leaflet-control-attribution a {
+  color: var(--texto-suave) !important;
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--superficie);
+  color: var(--texto);
+  box-shadow: var(--sombra-flutuante);
+}
+
+.leaflet-popup-content {
+  margin: 0;
+  width: 260px !important;
+}
+
+.leaflet-popup-close-button {
+  color: var(--texto-fraco) !important;
+}
+
+/*
+ * No tema escuro os tiles do OpenStreetMap ficam ofuscantes. Inverter e girar o
+ * matiz e a forma barata de escurecer um mapa raster sem trocar o provedor de
+ * tiles, que custaria dinheiro ou exigiria token.
+ */
+.dark .tiles-mapa {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.92) saturate(0.8);
+}
+
+/* Pin do lead, desenhado em CSS para nao carregar imagem por marcador. */
+.pin-lead {
+  background: transparent;
+  border: 0;
+}
+
+.pin-lead-forma {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
+  transition: transform 120ms ease;
+}
+
+.dark .pin-lead-forma {
+  border-color: rgb(255 255 255 / 0.75);
+}
+
+/* Lead ja abordado: anel externo e cor dessaturada, para bater o olho e ver o
+   que ja foi varrido. */
+.pin-lead-contatado .pin-lead-forma {
+  filter: saturate(0.25);
+  box-shadow:
+    0 0 0 2px var(--superficie),
+    0 0 0 4px var(--color-marca-500),
+    0 1px 4px rgb(0 0 0 / 0.4);
+}
+
+.pin-lead-destacado .pin-lead-forma {
+  transform: scale(1.5);
+  z-index: 1000;
+}
+
+/* Cluster do markercluster, reestilizado para o tema. */
+.cluster-lead {
+  background: transparent;
+}
+
+.cluster-lead-forma {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: color-mix(in srgb, var(--color-marca-600) 88%, transparent);
+  border: 2px solid #fff;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

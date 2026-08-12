@@ -22,16 +22,49 @@
 
 # misc
 .DS_Store
+
+# Chaves e certificados. Nenhum destes tem motivo para existir aqui, mas o custo
+# de bloquear e zero e o custo de vazar um e alto.
 *.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+id_rsa*
+credentials*.json
+service-account*.json
+*secret*.json
 
 # debug
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# Configuracao local de agentes
+.claude/
+.agents/
+
+# Arquivos de ambiente. So o exemplo, com placeholders, pode ser versionado.
 .env*
+!.env.example
+*.local
+
+# Banco local. Contem telefone e endereco de negocios reais coletados do Google,
+# alem do seu historico de contato, entao nunca deve ir para um repositorio.
+/data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.sql
+*.dump
+
+# Planilhas exportadas
+/exports/
 
 # vercel
 .vercel
