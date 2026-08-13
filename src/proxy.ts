@@ -6,15 +6,16 @@
  * carteira de leads, gastar sua cota do Google e registrar contatos. Quem quiser
  * abusar nao passa pela tela de login, chama /api/leads direto.
  *
- * Roda em runtime Edge, entao usa Web Crypto. A conferencia de senha, que precisa
- * de scrypt do Node, fica na rota de login.
+ * Aqui tambem acontece a renovacao do token do Supabase. Por isso a resposta e
+ * criada antes da verificacao e devolvida no fim: se o cliente gravar um cookie
+ * novo durante o getUser, ele precisa viajar de volta ao navegador.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { COOKIE_SESSAO, exigirAutenticacao, lerConfigAuth, sessaoValida } from '@/lib/auth/sessao';
+import { clienteProxy, exigirAutenticacao, lerConfigSupabase } from '@/lib/auth/supabase';
 
 /** Caminhos que existem justamente para quem ainda nao entrou. */
-const PUBLICOS = ['/entrar', '/api/auth/login', '/api/auth/logout'];
+const PUBLICOS = ['/entrar', '/api/auth'];
 
 export async function proxy(requisicao: NextRequest) {
   const { pathname } = requisicao.nextUrl;
@@ -23,26 +24,32 @@ export async function proxy(requisicao: NextRequest) {
     return NextResponse.next();
   }
 
-  const { segredo, configurado } = lerConfigAuth();
+  // Precisa existir antes da checagem para receber o cookie renovado.
+  const resposta = NextResponse.next({ request: requisicao });
 
-  if (!configurado) {
-    /*
-     * Sem senha configurada: em desenvolvimento libera, em producao bloqueia.
-     * Bloquear em producao e o que impede publicar a ferramenta destrancada por
-     * ter esquecido de definir uma variavel de ambiente.
-     */
-    if (!exigirAutenticacao()) return NextResponse.next();
-
-    return respostaNegada(
+  if (!lerConfigSupabase().configurado) {
+    if (!exigirAutenticacao()) return resposta;
+    return negar(
       requisicao,
-      'Autenticacao nao configurada no servidor. Defina SENHA_ACESSO_HASH e SESSAO_SEGREDO.',
+      'Supabase nao configurado no servidor. Defina NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY.',
     );
   }
 
-  const token = requisicao.cookies.get(COOKIE_SESSAO)?.value;
-  if (await sessaoValida(token, segredo!)) return NextResponse.next();
+  const supabase = clienteProxy(requisicao, resposta);
+  if (!supabase) return negar(requisicao, 'Supabase nao configurado.');
 
-  return respostaNegada(requisicao, 'Sessao expirada ou ausente.');
+  /*
+   * getUser e nao getSession: getSession apenas le o cookie e confia no que
+   * esta escrito nele, enquanto getUser valida o token contra o servidor do
+   * Supabase. Para decidir acesso, so a validacao serve.
+   */
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (user) return resposta;
+
+  return negar(requisicao, 'Sessao expirada ou ausente.');
 }
 
 /**
@@ -51,7 +58,7 @@ export async function proxy(requisicao: NextRequest) {
  * Redirecionar uma chamada de API para HTML faria o cliente tentar interpretar
  * uma pagina como JSON e o erro na tela seria incompreensivel.
  */
-function respostaNegada(requisicao: NextRequest, motivo: string) {
+function negar(requisicao: NextRequest, motivo: string) {
   if (requisicao.nextUrl.pathname.startsWith('/api/')) {
     return NextResponse.json({ erro: motivo }, { status: 401 });
   }
@@ -59,7 +66,7 @@ function respostaNegada(requisicao: NextRequest, motivo: string) {
   const destino = requisicao.nextUrl.clone();
   destino.pathname = '/entrar';
   destino.search = '';
-  // Guarda para onde a pessoa queria ir, para voltar ao lugar certo apos entrar.
+
   const alvo = requisicao.nextUrl.pathname + requisicao.nextUrl.search;
   if (alvo && alvo !== '/') destino.searchParams.set('destino', alvo);
 
@@ -70,8 +77,8 @@ export const config = {
   /*
    * Tudo, menos os assets que o proprio Next serve e a logo.
    *
-   * O favicon e a logo ficam de fora porque a tela de login precisa deles antes
-   * de haver sessao, e porque nao revelam nada.
+   * O icone e a logo ficam de fora porque a tela de login precisa deles antes de
+   * haver sessao, e porque nao revelam nada.
    */
   matcher: ['/((?!_next/static|_next/image|icon.svg|logo-nexos.jpg|favicon.ico).*)'],
 };

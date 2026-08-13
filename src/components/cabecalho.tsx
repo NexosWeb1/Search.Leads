@@ -2,6 +2,7 @@
 
 import Image from 'next/image';
 import { useState } from 'react';
+import { clienteNavegador } from '@/lib/auth/supabase';
 import { useTemaEscuro } from '@/lib/hooks';
 import { IconeLua, IconeSair, IconeSol } from './icones';
 
@@ -48,7 +49,10 @@ function BotaoSair() {
   const sair = async () => {
     setSaindo(true);
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      await clienteNavegador().auth.signOut();
+    } catch {
+      // Se o signOut falhar, seguir para a tela de login mesmo assim: melhor sair
+      // sem registrar do que ficar preso numa sessao que voce quis encerrar.
     } finally {
       /*
        * Recarregamento completo, e nao navegacao do router.

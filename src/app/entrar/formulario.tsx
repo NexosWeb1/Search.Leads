@@ -3,17 +3,24 @@
 import Image from 'next/image';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useState } from 'react';
-import { IconeAlerta, IconeBloqueado, IconeCarregando } from '@/components/icones';
+import { clienteNavegador } from '@/lib/auth/supabase';
+import { IconeAlerta, IconeBloqueado, IconeCarregando, IconeCheck } from '@/components/icones';
+
+type Modo = 'senha' | 'recuperar';
 
 export function FormularioEntrada() {
   const router = useRouter();
   const parametros = useSearchParams();
+
+  const [modo, setModo] = useState<Modo>('senha');
+  const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
   const [erro, setErro] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
   const [enviando, setEnviando] = useState(false);
 
   /**
-   * O destino vem da querystring, colocada pelo middleware quando ele barra uma
+   * O destino vem da querystring, colocada pelo proxy quando ele barra uma
    * navegacao. So aceitamos caminho interno: um valor comecando com `//` ou com
    * esquema viraria redirecionamento aberto para site de terceiro, que e como se
    * monta phishing em cima de tela de login legitima.
@@ -21,34 +28,40 @@ export function FormularioEntrada() {
   const bruto = parametros.get('destino') ?? '/';
   const destino = bruto.startsWith('/') && !bruto.startsWith('//') ? bruto : '/';
 
-  const enviar = async (evento: React.FormEvent) => {
+  const entrar = async (evento: React.FormEvent) => {
     evento.preventDefault();
     if (enviando) return;
 
     setEnviando(true);
     setErro(null);
+    setAviso(null);
 
     try {
-      const resposta = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ senha }),
-      });
+      const supabase = clienteNavegador();
 
-      const dados = await resposta.json().catch(() => ({}));
-
-      if (!resposta.ok) {
-        setErro([dados.erro, dados.detalhe].filter(Boolean).join(' ') || 'Nao foi possivel entrar');
-        setSenha('');
+      if (modo === 'recuperar') {
+        const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+          redirectTo: `${window.location.origin}/entrar`,
+        });
+        if (error) throw error;
+        setAviso('Se este e-mail tiver conta, o link de redefinicao chega em instantes.');
         return;
       }
 
-      // replace e nao push: a tela de login nao deve ficar no historico do
-      // navegador, senao o botao voltar traz de volta para ela ja autenticado.
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password: senha,
+      });
+
+      if (error) throw error;
+
+      // replace e nao push: a tela de login nao deve ficar no historico, senao o
+      // botao voltar traz de volta para ela ja autenticado.
       router.replace(destino);
       router.refresh();
-    } catch {
-      setErro('Falha de conexao com o servidor.');
+    } catch (e) {
+      setErro(traduzir(e));
+      setSenha('');
     } finally {
       setEnviando(false);
     }
@@ -76,25 +89,47 @@ export function FormularioEntrada() {
       </div>
 
       <form
-        onSubmit={enviar}
+        onSubmit={entrar}
         className="rounded-xl border border-borda bg-superficie p-4 shadow-[var(--sombra-cartao)]"
       >
-        <label htmlFor="senha" className="mb-1.5 block text-xs font-medium text-texto-suave">
-          Senha de acesso
+        <label htmlFor="email" className="mb-1.5 block text-xs font-medium text-texto-suave">
+          E-mail
         </label>
         <input
-          id="senha"
-          name="senha"
-          type="password"
-          value={senha}
-          onChange={(e) => setSenha(e.target.value)}
+          id="email"
+          name="email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
           required
           autoFocus
-          autoComplete="current-password"
+          autoComplete="username"
           spellCheck={false}
-          placeholder="Digite a senha…"
+          placeholder="voce@empresa.com.br"
           className="w-full rounded-lg border border-borda-campo bg-superficie px-3 py-2.5 text-sm text-texto placeholder:text-texto-fraco"
         />
+
+        {modo === 'senha' && (
+          <>
+            <label
+              htmlFor="senha"
+              className="mb-1.5 mt-3 block text-xs font-medium text-texto-suave"
+            >
+              Senha
+            </label>
+            <input
+              id="senha"
+              name="senha"
+              type="password"
+              value={senha}
+              onChange={(e) => setSenha(e.target.value)}
+              required
+              autoComplete="current-password"
+              placeholder="Digite a senha…"
+              className="w-full rounded-lg border border-borda-campo bg-superficie px-3 py-2.5 text-sm text-texto placeholder:text-texto-fraco"
+            />
+          </>
+        )}
 
         {erro && (
           <p
@@ -106,29 +141,78 @@ export function FormularioEntrada() {
           </p>
         )}
 
+        {aviso && (
+          <p
+            role="status"
+            className="mt-2.5 flex items-start gap-1.5 rounded-lg bg-marca-50 p-2 text-xs text-marca-800 ring-1 ring-marca-200 dark:bg-marca-800/30 dark:text-marca-200 dark:ring-marca-800"
+          >
+            <IconeCheck className="mt-0.5 size-3.5 shrink-0" />
+            <span>{aviso}</span>
+          </p>
+        )}
+
         <button
           type="submit"
-          disabled={enviando || senha.length === 0}
+          disabled={enviando || !email || (modo === 'senha' && !senha)}
           className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-marca-700 px-3 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-marca-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 dark:disabled:bg-slate-700 dark:disabled:text-slate-500"
         >
           {enviando ? (
             <>
               <IconeCarregando className="size-4" />
-              Entrando…
+              {modo === 'senha' ? 'Entrando…' : 'Enviando…'}
             </>
-          ) : (
+          ) : modo === 'senha' ? (
             <>
               <IconeBloqueado className="size-4" />
               Entrar
             </>
+          ) : (
+            'Enviar link de redefinicao'
           )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setModo(modo === 'senha' ? 'recuperar' : 'senha');
+            setErro(null);
+            setAviso(null);
+          }}
+          className="mt-3 w-full text-center text-[0.6875rem] font-medium text-marca-700 underline-offset-2 hover:underline dark:text-marca-400"
+        >
+          {modo === 'senha' ? 'Esqueci a senha' : 'Voltar para o login'}
         </button>
       </form>
 
       <p className="mt-4 text-center text-[0.6875rem] leading-relaxed text-texto-fraco">
-        Esqueceu a senha? Gere uma nova com <code className="font-mono">npm run senha</code> e
-        troque a variavel SENHA_ACESSO_HASH no servidor.
+        Contas sao criadas no painel do Supabase, em Authentication, Users.
       </p>
     </div>
   );
+}
+
+/**
+ * O Supabase devolve mensagem em ingles e generica de proposito, para nao
+ * revelar se o e-mail existe. Mantemos essa discricao, mas em portugues e
+ * dizendo o proximo passo.
+ */
+function traduzir(erro: unknown): string {
+  const bruto = erro instanceof Error ? erro.message : String(erro);
+
+  if (/invalid login credentials/i.test(bruto)) {
+    return 'E-mail ou senha incorretos.';
+  }
+  if (/email not confirmed/i.test(bruto)) {
+    return 'Esta conta ainda nao foi confirmada. Procure o e-mail de confirmacao do Supabase.';
+  }
+  if (/rate limit|too many/i.test(bruto)) {
+    return 'Tentativas demais. Espere alguns minutos antes de tentar de novo.';
+  }
+  if (/nao configurado/i.test(bruto)) {
+    return bruto;
+  }
+  if (/fetch|network/i.test(bruto)) {
+    return 'Falha de conexao com o Supabase. Confira a URL do projeto.';
+  }
+  return bruto;
 }

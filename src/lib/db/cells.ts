@@ -12,7 +12,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { db, agora, bool } from './index';
+import { db } from './index';
 import type { Celula } from '../search/grid';
 
 export const TTL_CACHE_DIAS = 30;
@@ -39,26 +39,19 @@ export interface CelulaCacheada {
 
 /** Devolve null quando nao ha cache valido e a celula precisa ir para a API. */
 export async function lerCache(chave: string): Promise<CelulaCacheada | null> {
-  const cliente = await db();
-  const limite = new Date(Date.now() - TTL_CACHE_DIAS * 86_400_000).toISOString();
+  const sql = await db();
 
-  const { rows } = await cliente.execute({
-    sql: `SELECT place_ids, saturada FROM cell_cache
-          WHERE chave = ? AND consultada_em >= ?`,
-    args: [chave, limite],
-  });
+  const [linha] = await sql<{ place_ids: unknown; saturada: boolean }[]>`
+    SELECT place_ids, saturada FROM cell_cache
+    WHERE chave = ${chave}
+      AND consultada_em >= now() - ${`${TTL_CACHE_DIAS} days`}::interval
+  `;
 
-  const linha = rows[0];
   if (!linha) return null;
 
-  try {
-    return {
-      placeIds: JSON.parse(String(linha.place_ids)) as string[],
-      saturada: bool(linha.saturada),
-    };
-  } catch {
-    return null;
-  }
+  // place_ids e jsonb: o driver ja entrega como array.
+  const placeIds = Array.isArray(linha.place_ids) ? (linha.place_ids as string[]) : [];
+  return { placeIds, saturada: Boolean(linha.saturada) };
 }
 
 export async function gravarCache(
@@ -66,29 +59,28 @@ export async function gravarCache(
   placeIds: string[],
   saturada: boolean,
 ): Promise<void> {
-  const cliente = await db();
-  await cliente.execute({
-    sql: `INSERT INTO cell_cache (chave, resultados, saturada, place_ids, consultada_em)
-          VALUES (?, ?, ?, ?, ?)
-          ON CONFLICT (chave) DO UPDATE SET
-            resultados = excluded.resultados,
-            saturada = excluded.saturada,
-            place_ids = excluded.place_ids,
-            consultada_em = excluded.consultada_em`,
-    args: [chave, placeIds.length, saturada ? 1 : 0, JSON.stringify(placeIds), agora()],
-  });
+  const sql = await db();
+
+  await sql`
+    INSERT INTO cell_cache (chave, resultados, saturada, place_ids, consultada_em)
+    VALUES (${chave}, ${placeIds.length}, ${saturada}, ${JSON.stringify(placeIds)}::jsonb, now())
+    ON CONFLICT (chave) DO UPDATE SET
+      resultados = excluded.resultados,
+      saturada = excluded.saturada,
+      place_ids = excluded.place_ids,
+      consultada_em = excluded.consultada_em
+  `;
 }
 
 /**
- * Remove cache vencido. Chamado no inicio de cada varredura para o arquivo nao
+ * Remove cache vencido. Chamado no inicio de cada varredura para a tabela nao
  * crescer sem limite e para nao servir dado fora do prazo dos Termos.
  */
 export async function limparCacheVencido(): Promise<number> {
-  const cliente = await db();
-  const limite = new Date(Date.now() - TTL_CACHE_DIAS * 86_400_000).toISOString();
-  const r = await cliente.execute({
-    sql: `DELETE FROM cell_cache WHERE consultada_em < ?`,
-    args: [limite],
-  });
-  return Number(r.rowsAffected ?? 0);
+  const sql = await db();
+  const removidas = await sql`
+    DELETE FROM cell_cache
+    WHERE consultada_em < now() - ${`${TTL_CACHE_DIAS} days`}::interval
+  `;
+  return removidas.count ?? 0;
 }

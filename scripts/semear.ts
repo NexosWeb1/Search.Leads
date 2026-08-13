@@ -20,7 +20,7 @@ import { resolve } from 'node:path';
 
 config({ path: resolve(process.cwd(), '.env.local'), quiet: true });
 
-import { db } from '../src/lib/db/index';
+import { db, fecharDb } from '../src/lib/db/index';
 import { criarBusca, finalizarBusca } from '../src/lib/db/searches';
 import { salvarLeads } from '../src/lib/db/leads';
 import { normalizarPlace } from '../src/lib/leads/mapear';
@@ -181,21 +181,27 @@ const CONJUNTOS: Conjunto[] = [
  */
 const LOCAL_DEMO = 'Porto Alegre, RS (dados de demonstracao)';
 
+/** Quantos leads reais existem hoje. Sustenta as travas abaixo. */
+async function contarReais(): Promise<number> {
+  const sql = await db();
+  const [linha] = await sql<{ n: string }[]>`
+    SELECT COUNT(*) AS n FROM leads WHERE place_id NOT LIKE 'demo-%'
+  `;
+  return Number(linha?.n ?? 0);
+}
+
 /** Apaga somente o que este script criou. Leads reais ficam intactos. */
 async function limparDemo(): Promise<void> {
-  const cliente = await db();
+  const sql = await db();
 
-  const antes = await cliente.execute(
-    "SELECT COUNT(*) AS n FROM leads WHERE place_id LIKE 'demo-%'",
-  );
+  const [antes] = await sql<{ n: string }[]>`
+    SELECT COUNT(*) AS n FROM leads WHERE place_id LIKE 'demo-%'
+  `;
 
-  for (const tabela of ['contact_log', 'search_leads', 'lead_crm', 'enrichment', 'leads']) {
-    await cliente.execute(`DELETE FROM ${tabela} WHERE place_id LIKE 'demo-%'`);
-  }
-  await cliente.execute({
-    sql: 'DELETE FROM searches WHERE local_label = ?',
-    args: [LOCAL_DEMO],
-  });
+  // O ON DELETE CASCADE do schema cuida de search_leads, lead_crm, enrichment e
+  // contact_log; apagar o lead ja leva tudo o que aponta para ele.
+  await sql`DELETE FROM leads WHERE place_id LIKE 'demo-%'`;
+  await sql`DELETE FROM searches WHERE local_label = ${LOCAL_DEMO}`;
 
   /*
    * Varre buscas que ficaram sem nenhum lead depois da limpeza. Sao restos de
@@ -207,44 +213,50 @@ async function limparDemo(): Promise<void> {
    * meio: essas tambem tem zero leads, mas o registro do que foi gasto nelas
    * precisa ser preservado.
    */
-  const orfas = await cliente.execute(
-    `DELETE FROM searches
-     WHERE status = 'concluida'
-       AND id NOT IN (SELECT DISTINCT search_id FROM search_leads)`,
-  );
+  const orfas = await sql`
+    DELETE FROM searches
+    WHERE status = 'concluida'
+      AND id NOT IN (SELECT search_id FROM search_leads)
+  `;
 
-  console.log(`${antes.rows[0]?.n ?? 0} leads de demonstracao removidos.`);
-  if (Number(orfas.rowsAffected ?? 0) > 0) {
-    console.log(`${orfas.rowsAffected} buscas de demonstracao orfas removidas.`);
+  console.log(`${antes?.n ?? 0} leads de demonstracao removidos.`);
+  if ((orfas.count ?? 0) > 0) {
+    console.log(`${orfas.count} buscas de demonstracao orfas removidas.`);
   }
   console.log('As varreduras reais continuam no banco.');
 }
 
-/** Zera o banco inteiro, inclusive o que veio do Google e custou requisicao. */
-async function limparTudo(): Promise<void> {
-  const cliente = await db();
+/**
+ * Zera o banco inteiro, inclusive o que veio do Google e custou requisicao.
+ *
+ * Exige `--tenho-certeza` quando ha lead real. A trava existe porque
+ * desenvolvimento e producao compartilham o mesmo banco do Supabase: sem ela,
+ * um comando digitado por engano apagaria a carteira e, o que e pior, o
+ * historico de contato, que nao volta de jeito nenhum.
+ */
+async function limparTudo(confirmado: boolean): Promise<void> {
+  const sql = await db();
+  const quantos = await contarReais();
 
-  const reais = await cliente.execute(
-    "SELECT COUNT(*) AS n FROM leads WHERE place_id NOT LIKE 'demo-%'",
-  );
-  const quantos = Number(reais.rows[0]?.n ?? 0);
-
-  for (const tabela of [
-    'contact_log',
-    'search_leads',
-    'lead_crm',
-    'enrichment',
-    'leads',
-    'searches',
-    'cell_cache',
-  ]) {
-    await cliente.execute(`DELETE FROM ${tabela}`);
+  if (quantos > 0 && !confirmado) {
+    console.error(`\nRECUSADO. Existem ${quantos} leads reais neste banco.`);
+    console.error('Apagar leva junto o historico de contato deles, que nao volta.\n');
+    console.error('Se e isso mesmo que voce quer:');
+    console.error('  npm run semear -- --limpar-tudo --tenho-certeza\n');
+    console.error('Para remover so a demonstracao:');
+    console.error('  npm run semear -- --limpar\n');
+    process.exit(1);
   }
+
+  // A ordem importa mesmo com CASCADE: searches primeiro levaria search_leads.
+  await sql`DELETE FROM leads`;
+  await sql`DELETE FROM searches`;
+  await sql`DELETE FROM cell_cache`;
 
   console.log('Banco zerado.');
   if (quantos > 0) {
     console.log(
-      `Atencao: ${quantos} leads reais foram apagados junto, e com eles o historico de contato deles.`,
+      `${quantos} leads reais foram apagados junto, e com eles o historico de contato deles.`,
     );
   }
 }
@@ -256,13 +268,29 @@ async function principal(): Promise<void> {
   // banco inteiro exige pedir explicitamente, porque leva junto varreduras que
   // custaram requisicao paga e o historico de contato delas.
   if (args.includes('--limpar-tudo')) {
-    await limparTudo();
+    await limparTudo(args.includes('--tenho-certeza'));
     return;
   }
 
   if (args.includes('--limpar')) {
     await limparDemo();
     if (args.length === 1) return;
+  }
+
+  /*
+   * Semear no mesmo banco que guarda leads reais mistura telefone inventado com
+   * telefone de verdade, e o painel passa a somar os dois. Como aqui
+   * desenvolvimento e producao compartilham o banco, isso e facil de fazer sem
+   * perceber.
+   */
+  const reais = await contarReais();
+  if (reais > 0 && !args.includes('--misturar')) {
+    console.error(`\nRECUSADO. Este banco ja tem ${reais} leads reais.`);
+    console.error('Semear misturaria dados inventados com os seus, e o painel de');
+    console.error('resultados passaria a somar telefone ficticio com telefone real.\n');
+    console.error('Se quiser mesmo assim:');
+    console.error('  npm run semear -- --misturar\n');
+    process.exit(1);
   }
 
   // Semear duas vezes duplicaria os dados de demonstracao.
@@ -352,7 +380,7 @@ async function principal(): Promise<void> {
     { quantidade: 4, entrega: 'pulado', diasAtras: 3 },
   ];
 
-  const cliente = await db();
+  const sql = await db();
   let cursor = 0;
 
   for (const passo of roteiro) {
@@ -371,20 +399,18 @@ async function principal(): Promise<void> {
 
       // Recua a data do contato, senao tudo cai em "contatado hoje" e nao da
       // para ver o cooldown expirando nem a fila de follow-up funcionando.
-      const quando = new Date(Date.now() - passo.diasAtras * dia).toISOString();
-      await cliente.execute({
-        sql: `UPDATE contact_log SET registrado_em = ? WHERE place_id = ?`,
-        args: [quando, placeId],
-      });
+      const quando = new Date(Date.now() - passo.diasAtras * dia);
+      await sql`UPDATE contact_log SET registrado_em = ${quando} WHERE place_id = ${placeId}`;
 
       // Somente envio de verdade tem data de contato. Falha tecnica deixa
       // registro no historico mas nao inicia periodo de espera, entao recuar a
       // data dela aqui criaria um estado que a producao nunca produz.
       if (passo.entrega === 'enviado') {
-        await cliente.execute({
-          sql: `UPDATE lead_crm SET ultimo_contato_em = ?, primeiro_contato_em = ? WHERE place_id = ?`,
-          args: [quando, quando, placeId],
-        });
+        await sql`
+          UPDATE lead_crm
+          SET ultimo_contato_em = ${quando}, primeiro_contato_em = ${quando}
+          WHERE place_id = ${placeId}
+        `;
       }
 
       if (passo.status) {
@@ -395,13 +421,11 @@ async function principal(): Promise<void> {
           valorFechado: passo.valor ?? null,
         });
         // A resposta veio depois do contato, nunca antes.
-        const respondeu = new Date(
-          Date.now() - (passo.diasAtras - 2) * dia,
-        ).toISOString();
-        await cliente.execute({
-          sql: `UPDATE lead_crm SET respondeu_em = ? WHERE place_id = ? AND respondeu_em IS NOT NULL`,
-          args: [respondeu, placeId],
-        });
+        const respondeu = new Date(Date.now() - (passo.diasAtras - 2) * dia);
+        await sql`
+          UPDATE lead_crm SET respondeu_em = ${respondeu}
+          WHERE place_id = ${placeId} AND respondeu_em IS NOT NULL
+        `;
       }
     }
   }
@@ -411,7 +435,11 @@ async function principal(): Promise<void> {
   console.log('Para remover so a demonstracao: npm run semear -- --limpar');
 }
 
-principal().catch((erro) => {
-  console.error('Falhou:', erro instanceof Error ? erro.message : erro);
-  process.exit(1);
-});
+principal()
+  .then(() => fecharDb())
+  .then(() => process.exit(0))
+  .catch(async (erro) => {
+    console.error('Falhou:', erro instanceof Error ? erro.message : erro);
+    await fecharDb().catch(() => {});
+    process.exit(1);
+  });

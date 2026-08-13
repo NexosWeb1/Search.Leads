@@ -1,26 +1,40 @@
 /**
  * Teste de integracao do banco, com foco na invariante anti-spam.
  *
- * O cenario central e o que voce pediu: contatar um comercio numa varredura e
+ * O cenario central e o que importa: contatar um comercio numa varredura e
  * depois reencontrar o mesmo comercio numa varredura de OUTRO nicho. Ele precisa
  * chegar ja marcado como contatado, fora da fila de disparo, com o historico
  * intacto. Se este arquivo passar a falhar, a ferramenta volta a permitir mandar
  * a mesma mensagem duas vezes para a mesma pessoa.
  *
- * Roda sem chave de API: os leads sao sinteticos, no formato exato que a Places
- * API devolve.
+ * Isolamento: tudo roda num schema proprio do Postgres, criado no inicio e
+ * derrubado no fim. Desenvolvimento e producao compartilham o mesmo projeto do
+ * Supabase, entao sem isso o teste escreveria na mesma tabela que guarda sua
+ * carteira de leads e seu historico de contato.
+ *
+ * Sem DATABASE_URL configurada, o arquivo inteiro e pulado. Os testes de logica
+ * pura (grade, score, telefone, periodo de espera, extracao) continuam rodando
+ * offline.
  */
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { config } from 'dotenv';
+import { resolve } from 'node:path';
 
-// Precisa vir antes da primeira chamada a db(), e nao antes dos imports: a
-// conexao le DATABASE_URL de forma tardia, no primeiro uso.
-const pastaTemp = mkdtempSync(join(tmpdir(), 'leads-test-'));
-process.env.DATABASE_URL = `file:${join(pastaTemp, 'teste.db').replace(/\\/g, '/')}`;
+config({ path: resolve(process.cwd(), '.env.local'), quiet: true });
+
+/*
+ * Exige uma conexao Postgres de verdade, e nao apenas a variavel preenchida.
+ * Sem esta checagem, um DATABASE_URL sobrando de outra configuracao faria os 16
+ * testes falharem com erro de conexao em vez de simplesmente pularem.
+ */
+const TEM_BANCO = /^postgres(ql)?:\/\//.test(process.env.DATABASE_URL ?? '');
+const SCHEMA_TESTE = `teste_${Date.now().toString(36)}`;
+
+// Precisa vir antes da primeira chamada a db(): a conexao le DB_SCHEMA de forma
+// tardia, no primeiro uso.
+if (TEM_BANCO) process.env.DB_SCHEMA = SCHEMA_TESTE;
 
 import { normalizarPlace } from '../src/lib/leads/mapear';
 import { salvarLeads, listarLeads } from '../src/lib/db/leads';
@@ -35,12 +49,18 @@ import { db, fecharDb } from '../src/lib/db/index';
 import { COOLDOWN_PADRAO } from '../src/lib/contacts/cooldown';
 import type { PlaceBruto } from '../src/lib/places/client';
 
+const pular = { skip: TEM_BANCO ? false : 'DATABASE_URL nao configurada' };
+
 function place(id: string, extra: Partial<PlaceBruto> = {}): PlaceBruto {
   return {
     id,
     displayName: { text: `Barbearia ${id}` },
-    formattedAddress: `Rua Teste 100, Porto Alegre, RS`,
-    postalAddress: { locality: 'Porto Alegre', sublocality: 'Centro', administrativeArea: 'RS' },
+    formattedAddress: 'Rua Teste 100, Porto Alegre, RS',
+    postalAddress: {
+      locality: 'Porto Alegre',
+      sublocality: 'Centro',
+      administrativeArea: 'RS',
+    },
     location: { latitude: -30.0346, longitude: -51.2177 },
     businessStatus: 'OPERATIONAL',
     nationalPhoneNumber: '(51) 99950-8056',
@@ -57,7 +77,7 @@ async function guardar(searchId: string, bruto: PlaceBruto): Promise<void> {
   await salvarLeads(searchId, [{ lead, distanciaM: 1200 }]);
 }
 
-const buscaBarbearia = async () =>
+const buscaBarbearia = () =>
   criarBusca({
     nichoId: 'barbearia',
     nichoLabel: 'Barbearia',
@@ -68,7 +88,7 @@ const buscaBarbearia = async () =>
     celulasTotal: 40,
   });
 
-const buscaSalao = async () =>
+const buscaSalao = () =>
   criarBusca({
     nichoId: 'salao-beleza',
     nichoLabel: 'Salao de beleza',
@@ -80,20 +100,19 @@ const buscaSalao = async () =>
   });
 
 before(async () => {
+  if (!TEM_BANCO) return;
   await db();
 });
 
-after(() => {
-  // Fechar antes de apagar: no Windows o arquivo fica travado pela conexao.
-  fecharDb();
-  try {
-    rmSync(pastaTemp, { recursive: true, force: true });
-  } catch {
-    // Banco temporario que sobra no temp do sistema nao justifica falhar o teste.
-  }
+after(async () => {
+  if (!TEM_BANCO) return;
+  // Derruba o schema inteiro: nada do teste sobrevive no banco compartilhado.
+  const sql = await db();
+  await sql.unsafe(`DROP SCHEMA IF EXISTS ${SCHEMA_TESTE} CASCADE`);
+  await fecharDb();
 });
 
-test('lead novo e salvo, pontuado e classificado', async () => {
+test('lead novo e salvo, pontuado e classificado', pular, async () => {
   const busca = await buscaBarbearia();
   await guardar(busca, place('novo-1'));
 
@@ -110,7 +129,7 @@ test('lead novo e salvo, pontuado e classificado', async () => {
   assert.equal(leads[0].contato.tipo, 'nunca_contatado');
 });
 
-test('quem tem site proprio fica fora da lista por padrao', async () => {
+test('quem tem site proprio fica fora da lista por padrao', pular, async () => {
   const busca = await buscaBarbearia();
   await guardar(busca, place('com-site', { websiteUri: 'https://barbearia.com.br' }));
   await guardar(busca, place('sem-site'));
@@ -123,7 +142,7 @@ test('quem tem site proprio fica fora da lista por padrao', async () => {
   assert.equal(todos.total, 2);
 });
 
-test('Instagram no campo de site continua entrando como lead', async () => {
+test('Instagram no campo de site continua entrando como lead', pular, async () => {
   const busca = await buscaBarbearia();
   await guardar(busca, place('insta', { websiteUri: 'https://instagram.com/barbearia' }));
 
@@ -133,7 +152,7 @@ test('Instagram no campo de site continua entrando como lead', async () => {
   assert.equal(leads[0].temSiteReal, false);
 });
 
-test('ESSENCIAL: contato feito num nicho aparece na varredura de outro nicho', async () => {
+test('ESSENCIAL: contato feito num nicho aparece na varredura de outro', pular, async () => {
   const primeira = await buscaBarbearia();
   await guardar(primeira, place('compartilhado'));
 
@@ -165,7 +184,7 @@ test('ESSENCIAL: contato feito num nicho aparece na varredura de outro nicho', a
   assert.equal(historico[0].mensagem, 'Oi, vi que voces nao tem site');
 });
 
-test('falha tecnica nao consome tentativa nem inicia cooldown', async () => {
+test('falha tecnica nao consome tentativa nem inicia cooldown', pular, async () => {
   const busca = await buscaBarbearia();
   await guardar(busca, place('sem-zap', { nationalPhoneNumber: undefined }));
 
@@ -184,13 +203,12 @@ test('falha tecnica nao consome tentativa nem inicia cooldown', async () => {
     'o lead precisa voltar para a fila depois de corrigir o telefone',
   );
 
-  // Mas a falha fica registrada, para o dashboard poder contar.
   const historico = await historicoContato('sem-zap');
   assert.equal(historico.length, 1);
   assert.equal(historico[0].entrega, 'numero_invalido');
 });
 
-test('na tentativa configurada o lead vira frio sozinho', async () => {
+test('na tentativa configurada o lead vira frio sozinho', pular, async () => {
   const busca = await buscaBarbearia();
   await guardar(busca, place('insistente'));
 
@@ -207,7 +225,7 @@ test('na tentativa configurada o lead vira frio sozinho', async () => {
   assert.equal(lead.contato.tipo, 'esgotado');
 });
 
-test('quem respondeu sai do disparo em massa', async () => {
+test('quem respondeu sai do disparo em massa', pular, async () => {
   const busca = await buscaBarbearia();
   await guardar(busca, place('respondeu-1'));
   await registrarContato({ placeId: 'respondeu-1', entrega: 'enviado' });
@@ -221,12 +239,12 @@ test('quem respondeu sai do disparo em massa', async () => {
   assert.ok(lead.respondeuEm);
 });
 
-test('novo envio nao rebaixa quem ja respondeu', async () => {
+test('novo envio nao rebaixa quem ja respondeu', pular, async () => {
   const r = await registrarContato({ placeId: 'respondeu-1', entrega: 'enviado' });
   assert.equal(r.statusNovo, 'respondeu');
 });
 
-test('perdido guarda o motivo, que alimenta o dashboard', async () => {
+test('perdido guarda o motivo, que alimenta o dashboard', pular, async () => {
   const busca = await buscaBarbearia();
   await guardar(busca, place('perdido-1'));
   await registrarContato({ placeId: 'perdido-1', entrega: 'enviado' });
@@ -239,9 +257,10 @@ test('perdido guarda o motivo, que alimenta o dashboard', async () => {
   const { leads } = await listarLeads({ searchId: busca, status: ['perdido'] });
   assert.equal(leads.length, 1);
   assert.equal(leads[0].motivoPerda, 'achou_caro');
+  assert.equal(leads[0].contato.pode, false, 'perdido nao volta sozinho para a fila');
 });
 
-test('o filtro de nunca contatado exclui quem ja recebeu mensagem', async () => {
+test('o filtro de nunca contatado exclui quem ja recebeu mensagem', pular, async () => {
   const busca = await buscaBarbearia();
   await guardar(busca, place('virgem-1'));
   await guardar(busca, place('usado-1'));
@@ -253,18 +272,18 @@ test('o filtro de nunca contatado exclui quem ja recebeu mensagem', async () => 
   assert.ok(!ids.includes('usado-1'));
 });
 
-test('falha tecnica com data recuada nao vira cooldown', async () => {
+test('falha tecnica com data recuada nao vira cooldown', pular, async () => {
   // Reproduz o estado que quase escapou: registro no historico com data
   // recente, porem zero tentativas. O lead tem de seguir disponivel.
   const busca = await buscaBarbearia();
   await guardar(busca, place('tecnica-datada', { nationalPhoneNumber: undefined }));
   await registrarContato({ placeId: 'tecnica-datada', entrega: 'numero_invalido' });
 
-  const cliente = await db();
-  await cliente.execute({
-    sql: `UPDATE lead_crm SET ultimo_contato_em = ? WHERE place_id = ?`,
-    args: [new Date(Date.now() - 2 * 86_400_000).toISOString(), 'tecnica-datada'],
-  });
+  const sql = await db();
+  await sql`
+    UPDATE lead_crm SET ultimo_contato_em = now() - interval '2 days'
+    WHERE place_id = 'tecnica-datada'
+  `;
 
   const { leads } = await listarLeads({ searchId: busca });
   const lead = leads.find((l) => l.placeId === 'tecnica-datada');
@@ -280,9 +299,7 @@ test('falha tecnica com data recuada nao vira cooldown', async () => {
   );
 });
 
-test('o filtro de disponivel concorda com a decisao do cooldown', async () => {
-  // A lista e a fila de disparo precisam dar a mesma resposta, senao a contagem
-  // do botao "Modo disparo" mente.
+test('o filtro de disponivel concorda com a decisao do cooldown', pular, async () => {
   const { leads } = await listarLeads({ contato: 'disponivel', incluirComSite: true });
   for (const lead of leads) {
     assert.equal(
@@ -293,7 +310,7 @@ test('o filtro de disponivel concorda com a decisao do cooldown', async () => {
   }
 });
 
-test('e o inverso: quem esta liberado precisa passar pelo filtro SQL', async () => {
+test('e o inverso: quem esta liberado passa pelo filtro SQL', pular, async () => {
   // A verificacao nos dois sentidos e o que garante que a contagem exibida bate
   // com a fila de verdade. Um lado sozinho deixa o outro erro passar.
   const todos = await listarLeads({ incluirComSite: true, limite: 2000 });
@@ -314,7 +331,7 @@ test('e o inverso: quem esta liberado precisa passar pelo filtro SQL', async () 
   }
 });
 
-test('somente WhatsApp exige celular, nao aceita fixo', async () => {
+test('somente WhatsApp exige celular, nao aceita fixo', pular, async () => {
   const busca = await buscaBarbearia();
   await guardar(busca, place('fixo-1', { nationalPhoneNumber: '(51) 3232-1010' }));
 
@@ -325,7 +342,7 @@ test('somente WhatsApp exige celular, nao aceita fixo', async () => {
   assert.ok(todos.leads.some((l) => l.placeId === 'fixo-1'));
 });
 
-test('o contador diario soma apenas envios que sairam', async () => {
+test('o contador diario soma apenas envios que sairam', pular, async () => {
   const antes = await enviosNoDia();
   await registrarContato({ placeId: 'novo-1', entrega: 'enviado' });
   await registrarContato({ placeId: 'novo-1', entrega: 'pulado' });
@@ -334,11 +351,12 @@ test('o contador diario soma apenas envios que sairam', async () => {
 });
 
 test('comercio fechado definitivamente nao entra como lead', () => {
+  // Nao toca no banco, entao roda mesmo sem DATABASE_URL.
   const lead = normalizarPlace(place('fechado', { businessStatus: 'CLOSED_PERMANENTLY' }));
   assert.equal(lead, null);
 });
 
-test('reencontrar o comercio atualiza os dados do Google sem apagar o CRM', async () => {
+test('reencontrar o comercio atualiza o Google sem apagar o CRM', pular, async () => {
   const busca = await buscaSalao();
   // Agora ele ganhou mais avaliacoes e mudou o telefone.
   await guardar(

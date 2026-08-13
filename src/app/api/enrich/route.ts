@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { db, agora } from '@/lib/db/index';
+import { db } from '@/lib/db/index';
 import { listarLeads } from '@/lib/db/leads';
 import { buscarContatos, extrairDaUrl } from '@/lib/enrich/crawler';
 import { comLimite } from '@/lib/async';
@@ -32,7 +32,7 @@ export async function POST(requisicao: Request) {
     return Response.json({ erro: 'Parametros invalidos', detalhe: String(erro) }, { status: 400 });
   }
 
-  const cliente = await db();
+  const sql = await db();
 
   // Somente leads sem enriquecimento ainda. Repetir os que ja foram seria gastar
   // requisicao de rede para reescrever o mesmo dado.
@@ -95,29 +95,23 @@ export async function POST(requisicao: Request) {
           if (!semRede && host) dominiosUsados.add(host);
           const contatos = semRede ?? (await buscarContatos(lead.websiteUrl));
 
-          await cliente.execute({
-            sql: `INSERT INTO enrichment
-                    (place_id, email, instagram, facebook, whatsapp, status, erro, buscado_em)
-                  VALUES (?,?,?,?,?,?,?,?)
-                  ON CONFLICT (place_id) DO UPDATE SET
-                    email = excluded.email,
-                    instagram = excluded.instagram,
-                    facebook = excluded.facebook,
-                    whatsapp = excluded.whatsapp,
-                    status = excluded.status,
-                    erro = excluded.erro,
-                    buscado_em = excluded.buscado_em`,
-            args: [
-              lead.placeId,
-              contatos.email,
-              contatos.instagram,
-              contatos.facebook,
-              contatos.whatsapp,
-              contatos.status,
-              contatos.erro,
-              agora(),
-            ],
-          });
+          await sql`
+            INSERT INTO enrichment
+              (place_id, email, instagram, facebook, whatsapp, status, erro, buscado_em)
+            VALUES (
+              ${lead.placeId}, ${contatos.email}, ${contatos.instagram},
+              ${contatos.facebook}, ${contatos.whatsapp}, ${contatos.status},
+              ${contatos.erro}, now()
+            )
+            ON CONFLICT (place_id) DO UPDATE SET
+              email = excluded.email,
+              instagram = excluded.instagram,
+              facebook = excluded.facebook,
+              whatsapp = excluded.whatsapp,
+              status = excluded.status,
+              erro = excluded.erro,
+              buscado_em = excluded.buscado_em
+          `;
 
           feitos += 1;
           if (contatos.email || contatos.instagram || contatos.whatsapp) comContato += 1;

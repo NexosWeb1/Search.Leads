@@ -3,9 +3,9 @@
 # O plugin oficial do Next cuida do roteamento, das rotas de API como funcoes e
 # do proxy como Edge Function. Nao ha nada a configurar alem disto.
 #
-# ATENCAO ao banco: funcao serverless tem disco efemero. O arquivo
-# data/leads.db seria apagado a cada deploy e a cada reciclagem de instancia.
-# Em producao DATABASE_URL precisa apontar para um libsql:// do Turso.
+# ATENCAO a string de conexao: DATABASE_URL precisa ser a do POOLER DE TRANSACAO
+# do Supabase (porta 6543), e nao a conexao direta (5432). Funcao serverless abre
+# muitas conexoes curtas, e a conexao direta esgota o limite do banco.
 # Veja a secao "Hospedar no Netlify" no README.
 
 [build]

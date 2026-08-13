@@ -7,7 +7,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { db, agora } from './index';
+import type { Row } from 'postgres';
+import { db } from './index';
 
 export type StatusBusca = 'rodando' | 'concluida' | 'erro' | 'cancelada';
 
@@ -43,20 +44,19 @@ export interface NovaBusca {
 }
 
 export async function criarBusca(dados: NovaBusca): Promise<string> {
-  const cliente = await db();
+  const sql = await db();
   const id = randomUUID();
 
-  await cliente.execute({
-    sql: `INSERT INTO searches (
-            id, nicho_id, nicho_label, local_label, centro_lat, centro_lng,
-            raio_km, status, celulas_total, criada_em
-          ) VALUES (?,?,?,?,?,?,?,'rodando',?,?)`,
-    args: [
-      id, dados.nichoId, dados.nichoLabel, dados.localLabel,
-      dados.centroLat, dados.centroLng, dados.raioKm,
-      dados.celulasTotal, agora(),
-    ],
-  });
+  await sql`
+    INSERT INTO searches (
+      id, nicho_id, nicho_label, local_label, centro_lat, centro_lng,
+      raio_km, status, celulas_total
+    ) VALUES (
+      ${id}, ${dados.nichoId}, ${dados.nichoLabel}, ${dados.localLabel},
+      ${dados.centroLat}, ${dados.centroLng}, ${dados.raioKm}, 'rodando',
+      ${dados.celulasTotal}
+    )
+  `;
 
   return id;
 }
@@ -69,30 +69,26 @@ export interface ProgressoBusca {
   custoUsd?: number;
 }
 
-const COLUNAS_PROGRESSO: Record<keyof ProgressoBusca, string> = {
-  celulasTotal: 'celulas_total',
-  celulasFeitas: 'celulas_feitas',
-  celulasSaturadas: 'celulas_saturadas',
-  requisicoes: 'requisicoes',
-  custoUsd: 'custo_usd',
-};
-
 export async function atualizarProgresso(
   id: string,
   progresso: ProgressoBusca,
 ): Promise<void> {
-  const entradas = Object.entries(progresso).filter(([, v]) => v !== undefined);
-  if (entradas.length === 0) return;
+  const sql = await db();
 
-  const cliente = await db();
-  const sets = entradas.map(
-    ([chave]) => `${COLUNAS_PROGRESSO[chave as keyof ProgressoBusca]} = ?`,
-  );
-
-  await cliente.execute({
-    sql: `UPDATE searches SET ${sets.join(', ')} WHERE id = ?`,
-    args: [...entradas.map(([, v]) => v as number), id],
-  });
+  /*
+   * COALESCE em vez de montar a lista de colunas dinamicamente: um unico
+   * comando cobre qualquer combinacao de campos, e o que vier indefinido
+   * simplesmente mantem o valor atual.
+   */
+  await sql`
+    UPDATE searches SET
+      celulas_total = COALESCE(${progresso.celulasTotal ?? null}, celulas_total),
+      celulas_feitas = COALESCE(${progresso.celulasFeitas ?? null}, celulas_feitas),
+      celulas_saturadas = COALESCE(${progresso.celulasSaturadas ?? null}, celulas_saturadas),
+      requisicoes = COALESCE(${progresso.requisicoes ?? null}, requisicoes),
+      custo_usd = COALESCE(${progresso.custoUsd ?? null}, custo_usd)
+    WHERE id = ${id}
+  `;
 }
 
 export async function finalizarBusca(
@@ -108,29 +104,27 @@ export async function finalizarBusca(
     celulasSaturadas?: number;
   },
 ): Promise<void> {
-  const cliente = await db();
-  await cliente.execute({
-    sql: `UPDATE searches SET
-            status = ?, erro = ?, total_no_raio = ?, total_sem_site = ?,
-            requisicoes = ?, custo_usd = ?, celulas_feitas = ?,
-            celulas_saturadas = ?, concluida_em = ?
-          WHERE id = ?`,
-    args: [
-      dados.status,
-      dados.erro ?? null,
-      dados.totalNoRaio ?? 0,
-      dados.totalSemSite ?? 0,
-      dados.requisicoes ?? 0,
-      dados.custoUsd ?? 0,
-      dados.celulasFeitas ?? 0,
-      dados.celulasSaturadas ?? 0,
-      agora(),
-      id,
-    ],
-  });
+  const sql = await db();
+
+  await sql`
+    UPDATE searches SET
+      status = ${dados.status},
+      erro = ${dados.erro ?? null},
+      total_no_raio = ${dados.totalNoRaio ?? 0},
+      total_sem_site = ${dados.totalSemSite ?? 0},
+      requisicoes = ${dados.requisicoes ?? 0},
+      custo_usd = ${dados.custoUsd ?? 0},
+      celulas_feitas = ${dados.celulasFeitas ?? 0},
+      celulas_saturadas = ${dados.celulasSaturadas ?? 0},
+      concluida_em = now()
+    WHERE id = ${id}
+  `;
 }
 
-function paraBusca(linha: Record<string, unknown>): Busca {
+const iso = (v: unknown): string =>
+  v instanceof Date ? v.toISOString() : String(v ?? '');
+
+function paraBusca(linha: Row): Busca {
   return {
     id: String(linha.id),
     nichoId: String(linha.nicho_id),
@@ -148,18 +142,23 @@ function paraBusca(linha: Record<string, unknown>): Busca {
     custoUsd: Number(linha.custo_usd ?? 0),
     totalNoRaio: Number(linha.total_no_raio ?? 0),
     totalSemSite: Number(linha.total_sem_site ?? 0),
-    criadaEm: String(linha.criada_em),
-    concluidaEm: linha.concluida_em ? String(linha.concluida_em) : null,
+    criadaEm: iso(linha.criada_em),
+    concluidaEm: linha.concluida_em ? iso(linha.concluida_em) : null,
   };
 }
 
 export async function listarBuscas(limite = 30): Promise<Busca[]> {
-  const cliente = await db();
-  const { rows } = await cliente.execute({
-    sql: `SELECT * FROM searches ORDER BY criada_em DESC LIMIT ?`,
-    args: [limite],
-  });
-  return rows.map((r) => paraBusca(r as unknown as Record<string, unknown>));
+  const sql = await db();
+  const linhas = await sql`
+    SELECT * FROM searches ORDER BY criada_em DESC LIMIT ${limite}
+  `;
+  return linhas.map(paraBusca);
+}
+
+export async function obterBusca(id: string): Promise<Busca | null> {
+  const sql = await db();
+  const [linha] = await sql`SELECT * FROM searches WHERE id = ${id}`;
+  return linha ? paraBusca(linha) : null;
 }
 
 /** Cota gratuita mensal da SKU Enterprise, que e a faixa usada pela varredura. */
@@ -188,35 +187,24 @@ export interface ConsumoDoMes {
  * pode ter contabilizado algo que nao chegou a virar lead.
  */
 export async function consumoDoMes(): Promise<ConsumoDoMes> {
-  const cliente = await db();
-  const agora = new Date();
-  const inicio = new Date(agora.getFullYear(), agora.getMonth(), 1).toISOString();
+  const sql = await db();
 
-  const { rows } = await cliente.execute({
-    sql: `SELECT COALESCE(SUM(requisicoes), 0) AS req, COUNT(*) AS n
-          FROM searches WHERE criada_em >= ?`,
-    args: [inicio],
-  });
+  const [linha] = await sql<{ req: string; n: string }[]>`
+    SELECT COALESCE(SUM(requisicoes), 0) AS req, COUNT(*) AS n
+    FROM searches
+    WHERE criada_em >= date_trunc('month', now())
+  `;
 
-  const requisicoes = Number(rows[0]?.req ?? 0);
+  const requisicoes = Number(linha?.req ?? 0);
   const excedente = Math.max(0, requisicoes - COTA_GRATIS_MES);
+  const agora = new Date();
 
   return {
     requisicoes,
     cotaGratis: COTA_GRATIS_MES,
     restantes: Math.max(0, COTA_GRATIS_MES - requisicoes),
     custoAcimaDaCotaUsd: (excedente * 35) / 1000,
-    buscas: Number(rows[0]?.n ?? 0),
+    buscas: Number(linha?.n ?? 0),
     mes: `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}`,
   };
-}
-
-export async function obterBusca(id: string): Promise<Busca | null> {
-  const cliente = await db();
-  const { rows } = await cliente.execute({
-    sql: `SELECT * FROM searches WHERE id = ?`,
-    args: [id],
-  });
-  const linha = rows[0];
-  return linha ? paraBusca(linha as unknown as Record<string, unknown>) : null;
 }

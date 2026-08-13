@@ -6,8 +6,8 @@
  * nova nao apague seu historico de contato com ele.
  */
 
-import type { InArgs, Row } from '@libsql/client';
-import { db, agora, bool, int } from './index';
+import type { Row } from 'postgres';
+import { db } from './index';
 import { haversineMeters, boundingBox, type LatLng } from '../geo';
 import {
   avaliarContato,
@@ -63,6 +63,29 @@ export interface LeadCompleto {
   statusEnriquecimento: string | null;
 }
 
+/** Postgres devolve timestamptz como Date; a interface trafega ISO. */
+function paraIso(valor: unknown): string | null {
+  if (!valor) return null;
+  if (valor instanceof Date) return valor.toISOString();
+  return String(valor);
+}
+
+function numeroOuNulo(valor: unknown): number | null {
+  if (valor === null || valor === undefined) return null;
+  const n = Number(valor);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Colunas do upsert de lead, na ordem usada pela insercao em lote. */
+const COLUNAS_LEAD = [
+  'place_id', 'nome', 'endereco', 'endereco_curto', 'bairro', 'cidade', 'uf', 'cep',
+  'lat', 'lng', 'telefone_e164', 'telefone_formatado', 'telefone_celular',
+  'telefone_motivo', 'website_url', 'website_host', 'website_classe',
+  'tem_site_real', 'nota', 'total_avaliacoes', 'tipo_principal', 'tipo_label',
+  'status_negocio', 'maps_uri', 'tem_horario', 'score', 'faixa', 'score_motivos',
+  'atualizado_em',
+] as const;
+
 /** Grava os leads de uma varredura e os vincula a ela. */
 export async function salvarLeads(
   searchId: string,
@@ -70,85 +93,113 @@ export async function salvarLeads(
 ): Promise<void> {
   if (itens.length === 0) return;
 
-  const cliente = await db();
-  const ts = agora();
+  const sql = await db();
+  const ts = new Date();
 
-  const comandos: Array<{ sql: string; args: InArgs }> = [];
+  const linhas = itens.map(({ lead }) => ({
+    place_id: lead.placeId,
+    nome: lead.nome,
+    endereco: lead.endereco,
+    endereco_curto: lead.enderecoCurto,
+    bairro: lead.bairro,
+    cidade: lead.cidade,
+    uf: lead.uf,
+    cep: lead.cep,
+    lat: lead.lat,
+    lng: lead.lng,
+    telefone_e164: lead.telefone.e164,
+    telefone_formatado: lead.telefone.formatado,
+    telefone_celular: lead.telefone.celular,
+    telefone_motivo: lead.telefone.motivo ?? null,
+    website_url: lead.site.url,
+    website_host: lead.site.host,
+    website_classe: lead.site.classe,
+    tem_site_real: lead.site.temSiteReal,
+    nota: lead.nota,
+    total_avaliacoes: lead.totalAvaliacoes,
+    tipo_principal: lead.tipoPrincipal,
+    tipo_label: lead.tipoLabel,
+    status_negocio: lead.statusNegocio,
+    maps_uri: lead.mapsUri,
+    tem_horario: lead.temHorario,
+    score: lead.score,
+    faixa: lead.faixa,
+    score_motivos: JSON.stringify(lead.motivos),
+    atualizado_em: ts,
+  }));
 
-  for (const { lead, distanciaM } of itens) {
-    comandos.push({
-      sql: `INSERT INTO leads (
-              place_id, nome, endereco, endereco_curto, bairro, cidade, uf, cep,
-              lat, lng, telefone_e164, telefone_formatado, telefone_celular,
-              telefone_motivo, website_url, website_host, website_classe,
-              tem_site_real, nota, total_avaliacoes, tipo_principal, tipo_label,
-              status_negocio, maps_uri, tem_horario, score, faixa, score_motivos,
-              visto_em, atualizado_em
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT (place_id) DO UPDATE SET
-              nome = excluded.nome,
-              endereco = excluded.endereco,
-              endereco_curto = excluded.endereco_curto,
-              bairro = excluded.bairro,
-              cidade = excluded.cidade,
-              uf = excluded.uf,
-              cep = excluded.cep,
-              lat = excluded.lat,
-              lng = excluded.lng,
-              telefone_e164 = excluded.telefone_e164,
-              telefone_formatado = excluded.telefone_formatado,
-              telefone_celular = excluded.telefone_celular,
-              telefone_motivo = excluded.telefone_motivo,
-              website_url = excluded.website_url,
-              website_host = excluded.website_host,
-              website_classe = excluded.website_classe,
-              tem_site_real = excluded.tem_site_real,
-              nota = excluded.nota,
-              total_avaliacoes = excluded.total_avaliacoes,
-              tipo_principal = excluded.tipo_principal,
-              tipo_label = excluded.tipo_label,
-              status_negocio = excluded.status_negocio,
-              maps_uri = excluded.maps_uri,
-              tem_horario = excluded.tem_horario,
-              score = excluded.score,
-              faixa = excluded.faixa,
-              score_motivos = excluded.score_motivos,
-              atualizado_em = excluded.atualizado_em`,
-      args: [
-        lead.placeId, lead.nome, lead.endereco, lead.enderecoCurto, lead.bairro,
-        lead.cidade, lead.uf, lead.cep, lead.lat, lead.lng,
-        lead.telefone.e164, lead.telefone.formatado, int(lead.telefone.celular),
-        lead.telefone.motivo ?? null,
-        lead.site.url, lead.site.host, lead.site.classe, int(lead.site.temSiteReal),
-        lead.nota, lead.totalAvaliacoes, lead.tipoPrincipal, lead.tipoLabel,
-        lead.statusNegocio, lead.mapsUri, int(lead.temHorario),
-        lead.score, lead.faixa, JSON.stringify(lead.motivos), ts, ts,
-      ],
-    });
+  const vinculos = itens.map(({ lead, distanciaM }) => ({
+    search_id: searchId,
+    place_id: lead.placeId,
+    distancia_m: distanciaM,
+  }));
 
-    // Garante a linha de CRM para os joins nao precisarem de LEFT JOIN em todo lugar.
-    comandos.push({
-      sql: `INSERT INTO lead_crm (place_id, status, atualizado_em)
-            VALUES (?, 'novo', ?)
-            ON CONFLICT (place_id) DO NOTHING`,
-      args: [lead.placeId, ts],
-    });
+  const crm = itens.map(({ lead }) => ({ place_id: lead.placeId, atualizado_em: ts }));
 
-    comandos.push({
-      sql: `INSERT INTO search_leads (search_id, place_id, distancia_m)
-            VALUES (?, ?, ?)
-            ON CONFLICT (search_id, place_id) DO UPDATE SET
-              distancia_m = excluded.distancia_m`,
-      args: [searchId, lead.placeId, distanciaM],
-    });
-  }
+  // Em lotes: com centenas de leads, uma ida ao banco por linha levaria minutos.
+  const TAMANHO_LOTE = 200;
 
-  // Em lote e numa transacao: com 300 leads sao 900 comandos, e um por vez
-  // levaria dezenas de segundos.
-  const TAMANHO_LOTE = 300;
-  for (let i = 0; i < comandos.length; i += TAMANHO_LOTE) {
-    await cliente.batch(comandos.slice(i, i + TAMANHO_LOTE), 'write');
-  }
+  await sql.begin(async (tx) => {
+    for (let i = 0; i < linhas.length; i += TAMANHO_LOTE) {
+      const lote = linhas.slice(i, i + TAMANHO_LOTE);
+
+      // `visto_em` fica de fora do UPDATE de proposito: e a data em que o
+      // comercio entrou na sua base pela primeira vez.
+      await tx`
+        INSERT INTO leads ${tx(lote, ...COLUNAS_LEAD)}
+        ON CONFLICT (place_id) DO UPDATE SET
+          nome = excluded.nome,
+          endereco = excluded.endereco,
+          endereco_curto = excluded.endereco_curto,
+          bairro = excluded.bairro,
+          cidade = excluded.cidade,
+          uf = excluded.uf,
+          cep = excluded.cep,
+          lat = excluded.lat,
+          lng = excluded.lng,
+          telefone_e164 = excluded.telefone_e164,
+          telefone_formatado = excluded.telefone_formatado,
+          telefone_celular = excluded.telefone_celular,
+          telefone_motivo = excluded.telefone_motivo,
+          website_url = excluded.website_url,
+          website_host = excluded.website_host,
+          website_classe = excluded.website_classe,
+          tem_site_real = excluded.tem_site_real,
+          nota = excluded.nota,
+          total_avaliacoes = excluded.total_avaliacoes,
+          tipo_principal = excluded.tipo_principal,
+          tipo_label = excluded.tipo_label,
+          status_negocio = excluded.status_negocio,
+          maps_uri = excluded.maps_uri,
+          tem_horario = excluded.tem_horario,
+          score = excluded.score,
+          faixa = excluded.faixa,
+          score_motivos = excluded.score_motivos,
+          atualizado_em = excluded.atualizado_em
+      `;
+    }
+
+    for (let i = 0; i < crm.length; i += TAMANHO_LOTE) {
+      // Garante a linha de CRM para os joins nao precisarem de LEFT JOIN.
+      await tx`
+        INSERT INTO lead_crm ${tx(crm.slice(i, i + TAMANHO_LOTE), 'place_id', 'atualizado_em')}
+        ON CONFLICT (place_id) DO NOTHING
+      `;
+    }
+
+    for (let i = 0; i < vinculos.length; i += TAMANHO_LOTE) {
+      await tx`
+        INSERT INTO search_leads ${tx(
+          vinculos.slice(i, i + TAMANHO_LOTE),
+          'search_id',
+          'place_id',
+          'distancia_m',
+        )}
+        ON CONFLICT (search_id, place_id) DO UPDATE SET
+          distancia_m = excluded.distancia_m
+      `;
+    }
+  });
 }
 
 /**
@@ -165,57 +216,50 @@ export async function vincularLeadsExistentes(
   raioM: number,
 ): Promise<number> {
   if (ids.length === 0) return 0;
-  const cliente = await db();
+  const sql = await db();
 
-  const comandos: Array<{ sql: string; args: InArgs }> = [];
-  const TAMANHO_LOTE = 400;
+  const linhas = await sql<{ place_id: string; lat: number; lng: number }[]>`
+    SELECT place_id, lat, lng FROM leads WHERE place_id = ANY(${ids})
+  `;
 
-  for (let i = 0; i < ids.length; i += TAMANHO_LOTE) {
-    const lote = ids.slice(i, i + TAMANHO_LOTE);
-    const { rows } = await cliente.execute({
-      sql: `SELECT place_id, lat, lng FROM leads
-            WHERE place_id IN (${lote.map(() => '?').join(',')})`,
-      args: lote,
-    });
+  const dentro = linhas
+    .map((l) => ({
+      search_id: searchId,
+      place_id: l.place_id,
+      distancia_m: haversineMeters(centro, { lat: Number(l.lat), lng: Number(l.lng) }),
+    }))
+    .filter((l) => l.distancia_m <= raioM);
 
-    for (const linha of rows) {
-      const distancia = haversineMeters(centro, {
-        lat: Number(linha.lat),
-        lng: Number(linha.lng),
-      });
-      if (distancia > raioM) continue;
+  if (dentro.length === 0) return 0;
 
-      comandos.push({
-        sql: `INSERT INTO search_leads (search_id, place_id, distancia_m)
-              VALUES (?, ?, ?)
-              ON CONFLICT (search_id, place_id) DO UPDATE SET
-                distancia_m = excluded.distancia_m`,
-        args: [searchId, String(linha.place_id), distancia],
-      });
-    }
+  const TAMANHO_LOTE = 200;
+  for (let i = 0; i < dentro.length; i += TAMANHO_LOTE) {
+    await sql`
+      INSERT INTO search_leads ${sql(
+        dentro.slice(i, i + TAMANHO_LOTE),
+        'search_id',
+        'place_id',
+        'distancia_m',
+      )}
+      ON CONFLICT (search_id, place_id) DO UPDATE SET
+        distancia_m = excluded.distancia_m
+    `;
   }
 
-  for (let i = 0; i < comandos.length; i += TAMANHO_LOTE) {
-    await cliente.batch(comandos.slice(i, i + TAMANHO_LOTE), 'write');
-  }
-
-  return comandos.length;
+  return dentro.length;
 }
 
 function paraLead(linha: Row, config: ConfigCooldown): LeadCompleto {
-  let motivos: LeadCompleto['motivos'] = [];
-  if (linha.score_motivos) {
-    try {
-      motivos = JSON.parse(String(linha.score_motivos));
-    } catch {
-      motivos = [];
-    }
-  }
+  // score_motivos e jsonb: o driver ja devolve como objeto.
+  const motivos = Array.isArray(linha.score_motivos)
+    ? (linha.score_motivos as LeadCompleto['motivos'])
+    : [];
 
   const status = (linha.status ?? 'novo') as StatusCrm;
   const tentativas = Number(linha.tentativas ?? 0);
-  const ultimoContatoEm = linha.ultimo_contato_em ? String(linha.ultimo_contato_em) : null;
-  const respondeuEm = linha.respondeu_em ? String(linha.respondeu_em) : null;
+  const ultimoContatoEm = paraIso(linha.ultimo_contato_em);
+  const respondeuEm = paraIso(linha.respondeu_em);
+  const motivoPerda = linha.motivo_perda ? String(linha.motivo_perda) : null;
 
   return {
     placeId: String(linha.place_id),
@@ -229,39 +273,29 @@ function paraLead(linha: Row, config: ConfigCooldown): LeadCompleto {
     lng: Number(linha.lng),
     telefoneE164: linha.telefone_e164 ? String(linha.telefone_e164) : null,
     telefoneFormatado: linha.telefone_formatado ? String(linha.telefone_formatado) : null,
-    telefoneCelular: bool(linha.telefone_celular),
+    telefoneCelular: Boolean(linha.telefone_celular),
     telefoneMotivo: linha.telefone_motivo ? String(linha.telefone_motivo) : null,
     websiteUrl: linha.website_url ? String(linha.website_url) : null,
     websiteHost: linha.website_host ? String(linha.website_host) : null,
     websiteClasse: String(linha.website_classe) as ClasseSite,
-    temSiteReal: bool(linha.tem_site_real),
-    nota: linha.nota === null ? null : Number(linha.nota),
-    totalAvaliacoes: linha.total_avaliacoes === null ? null : Number(linha.total_avaliacoes),
+    temSiteReal: Boolean(linha.tem_site_real),
+    nota: numeroOuNulo(linha.nota),
+    totalAvaliacoes: numeroOuNulo(linha.total_avaliacoes),
     tipoLabel: linha.tipo_label ? String(linha.tipo_label) : null,
     mapsUri: linha.maps_uri ? String(linha.maps_uri) : null,
     score: Number(linha.score),
     faixa: String(linha.faixa) as Faixa,
     motivos,
-    distanciaM: linha.distancia_m === null || linha.distancia_m === undefined
-      ? null
-      : Number(linha.distancia_m),
+    distanciaM: numeroOuNulo(linha.distancia_m),
     status,
-    motivoPerda: linha.motivo_perda ? String(linha.motivo_perda) : null,
+    motivoPerda,
     notas: linha.notas ? String(linha.notas) : null,
     tentativas,
     ultimoContatoEm,
     respondeuEm,
-    valorFechado: linha.valor_fechado === null || linha.valor_fechado === undefined
-      ? null
-      : Number(linha.valor_fechado),
+    valorFechado: numeroOuNulo(linha.valor_fechado),
     contato: avaliarContato(
-      {
-        status,
-        tentativas,
-        ultimoContatoEm,
-        respondeuEm,
-        motivoPerda: linha.motivo_perda ? String(linha.motivo_perda) : null,
-      },
+      { status, tentativas, ultimoContatoEm, respondeuEm, motivoPerda },
       config,
     ),
     email: linha.email ? String(linha.email) : null,
@@ -297,117 +331,112 @@ export interface FiltrosLeads {
   deslocamento?: number;
 }
 
-const ORDEM_SQL: Record<Ordenacao, string> = {
-  relevancia: 'l.score DESC, l.total_avaliacoes DESC',
-  avaliacoes: 'l.total_avaliacoes DESC, l.score DESC',
-  distancia: 'sl.distancia_m ASC',
-  nome: 'l.nome COLLATE NOCASE ASC',
-  status: 'c.status ASC, l.score DESC',
-  recente: 'l.atualizado_em DESC',
-};
-
 export async function listarLeads(
   filtros: FiltrosLeads = {},
   config: ConfigCooldown = COOLDOWN_PADRAO,
 ): Promise<{ leads: LeadCompleto[]; total: number }> {
-  const cliente = await db();
-  const where: string[] = [];
-  const args: InArgs = [];
+  const sql = await db();
 
-  const join = filtros.searchId
-    ? 'JOIN search_leads sl ON sl.place_id = l.place_id AND sl.search_id = ?'
-    : 'LEFT JOIN search_leads sl ON 1 = 0';
-  if (filtros.searchId) args.push(filtros.searchId);
+  /*
+   * As condicoes sao montadas como fragmentos do proprio driver, e nao
+   * concatenando texto. Assim todo valor continua sendo parametro e nao ha
+   * caminho para injecao, mesmo com o filtro de busca livre digitado por voce.
+   */
+  const condicoes = [];
 
-  if (!filtros.incluirComSite) where.push('l.tem_site_real = 0');
+  if (!filtros.incluirComSite) condicoes.push(sql`l.tem_site_real = false`);
 
-  if (filtros.faixas?.length) {
-    where.push(`l.faixa IN (${filtros.faixas.map(() => '?').join(',')})`);
-    args.push(...filtros.faixas);
-  }
-
-  if (filtros.status?.length) {
-    where.push(`c.status IN (${filtros.status.map(() => '?').join(',')})`);
-    args.push(...filtros.status);
-  }
+  if (filtros.faixas?.length) condicoes.push(sql`l.faixa = ANY(${filtros.faixas})`);
+  if (filtros.status?.length) condicoes.push(sql`c.status = ANY(${filtros.status})`);
 
   // WhatsApp exige celular: numero fixo nao recebe mensagem.
   if (filtros.somenteWhatsapp) {
-    where.push('l.telefone_e164 IS NOT NULL AND l.telefone_celular = 1');
+    condicoes.push(sql`l.telefone_e164 IS NOT NULL AND l.telefone_celular = true`);
   }
-  if (filtros.somenteInstagram) where.push('e.instagram IS NOT NULL');
-  if (filtros.somenteEmail) where.push('e.email IS NOT NULL');
+  if (filtros.somenteInstagram) condicoes.push(sql`e.instagram IS NOT NULL`);
+  if (filtros.somenteEmail) condicoes.push(sql`e.email IS NOT NULL`);
 
   if (filtros.busca?.trim()) {
-    where.push('(l.nome LIKE ? OR l.bairro LIKE ?)');
     const alvo = `%${filtros.busca.trim()}%`;
-    args.push(alvo, alvo);
+    condicoes.push(sql`(l.nome ILIKE ${alvo} OR l.bairro ILIKE ${alvo})`);
   }
 
   // Os estados de contato precisam espelhar exatamente avaliarContato(), senao a
   // contagem da lista discorda da fila de disparo.
-  // Derivado da mesma constante que avaliarContato usa, e nao reescrito a mao:
-  // duas listas iguais escritas em dois lugares divergem na primeira mudanca.
-  const bloqueados = STATUS_FORA_DA_FILA.map((s) => `'${s}'`).join(',');
+  const limiteEspera = new Date(Date.now() - config.diasBloqueio * 86_400_000);
+
   switch (filtros.contato) {
     case 'nunca':
-      where.push(`c.tentativas = 0 AND c.status NOT IN (${bloqueados})`);
+      condicoes.push(
+        sql`c.tentativas = 0 AND c.status <> ALL(${[...STATUS_FORA_DA_FILA]})`,
+      );
       break;
     case 'disponivel':
-      where.push(`c.status NOT IN (${bloqueados})`);
-      where.push('c.tentativas < ?');
-      args.push(config.maxTentativas);
+      condicoes.push(sql`c.status <> ALL(${[...STATUS_FORA_DA_FILA]})`);
+      condicoes.push(sql`c.tentativas < ${config.maxTentativas}`);
       /*
        * A condicao de data so vale para quem tem tentativa. Lead com zero
        * tentativas nunca recebeu mensagem, mesmo que tenha data de contato no
        * historico por causa de falha tecnica, e portanto esta liberado.
-       * Isto espelha a mesma decisao de avaliarContato: se as duas divergirem,
-       * a contagem da lista discorda da contagem do botao de disparo.
        */
-      where.push(
-        '(c.tentativas = 0 OR c.ultimo_contato_em IS NULL OR c.ultimo_contato_em < ?)',
-      );
-      args.push(
-        new Date(Date.now() - config.diasBloqueio * 86_400_000).toISOString(),
+      condicoes.push(
+        sql`(c.tentativas = 0 OR c.ultimo_contato_em IS NULL OR c.ultimo_contato_em < ${limiteEspera})`,
       );
       break;
     case 'contatados':
-      where.push('c.tentativas > 0');
+      condicoes.push(sql`c.tentativas > 0`);
       break;
     default:
       break;
   }
 
-  const clausula = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const ordem = ORDEM_SQL[filtros.ordenar ?? 'relevancia'];
+  const onde = condicoes.length
+    ? condicoes.reduce((acc, c) => sql`${acc} AND ${c}`)
+    : sql`true`;
+
+  const juncaoBusca = filtros.searchId
+    ? sql`JOIN search_leads sl ON sl.place_id = l.place_id AND sl.search_id = ${filtros.searchId}`
+    : sql`LEFT JOIN search_leads sl ON false`;
+
+  const ORDENS = {
+    relevancia: sql`l.score DESC, l.total_avaliacoes DESC NULLS LAST`,
+    avaliacoes: sql`l.total_avaliacoes DESC NULLS LAST, l.score DESC`,
+    distancia: sql`sl.distancia_m ASC NULLS LAST`,
+    nome: sql`lower(l.nome) ASC`,
+    status: sql`c.status ASC, l.score DESC`,
+    recente: sql`l.atualizado_em DESC`,
+  } as const;
+
+  const ordem = ORDENS[filtros.ordenar ?? 'relevancia'];
   const limite = Math.min(filtros.limite ?? 500, 2000);
   const deslocamento = filtros.deslocamento ?? 0;
 
-  const base = `FROM leads l
-      JOIN lead_crm c ON c.place_id = l.place_id
-      LEFT JOIN enrichment e ON e.place_id = l.place_id
-      ${join}
-      ${clausula}`;
+  const [contagem] = await sql<{ n: string }[]>`
+    SELECT COUNT(*) AS n
+    FROM leads l
+    JOIN lead_crm c ON c.place_id = l.place_id
+    LEFT JOIN enrichment e ON e.place_id = l.place_id
+    ${juncaoBusca}
+    WHERE ${onde}
+  `;
 
-  const contagem = await cliente.execute({
-    sql: `SELECT COUNT(*) AS n ${base}`,
-    args,
-  });
-
-  const { rows } = await cliente.execute({
-    sql: `SELECT l.*, sl.distancia_m,
-                 c.status, c.motivo_perda, c.notas, c.tentativas,
-                 c.ultimo_contato_em, c.respondeu_em, c.valor_fechado,
-                 e.email, e.instagram, e.status AS status_enriquecimento
-          ${base}
-          ORDER BY ${ordem}
-          LIMIT ? OFFSET ?`,
-    args: [...args, limite, deslocamento],
-  });
+  const linhas = await sql`
+    SELECT l.*, sl.distancia_m,
+           c.status, c.motivo_perda, c.notas, c.tentativas,
+           c.ultimo_contato_em, c.respondeu_em, c.valor_fechado,
+           e.email, e.instagram, e.status AS status_enriquecimento
+    FROM leads l
+    JOIN lead_crm c ON c.place_id = l.place_id
+    LEFT JOIN enrichment e ON e.place_id = l.place_id
+    ${juncaoBusca}
+    WHERE ${onde}
+    ORDER BY ${ordem}
+    LIMIT ${limite} OFFSET ${deslocamento}
+  `;
 
   return {
-    total: Number(contagem.rows[0]?.n ?? 0),
-    leads: rows.map((linha) => paraLead(linha, config)),
+    total: Number(contagem?.n ?? 0),
+    leads: linhas.map((linha) => paraLead(linha, config)),
   };
 }
 
@@ -416,57 +445,47 @@ export async function carregarLeadsPorIds(
   config: ConfigCooldown = COOLDOWN_PADRAO,
 ): Promise<LeadCompleto[]> {
   if (ids.length === 0) return [];
-  const cliente = await db();
+  const sql = await db();
 
-  const leads: LeadCompleto[] = [];
-  const TAMANHO_LOTE = 400;
+  const linhas = await sql`
+    SELECT l.*, NULL::double precision AS distancia_m,
+           c.status, c.motivo_perda, c.notas, c.tentativas,
+           c.ultimo_contato_em, c.respondeu_em, c.valor_fechado,
+           e.email, e.instagram, e.status AS status_enriquecimento
+    FROM leads l
+    JOIN lead_crm c ON c.place_id = l.place_id
+    LEFT JOIN enrichment e ON e.place_id = l.place_id
+    WHERE l.place_id = ANY(${ids})
+  `;
 
-  for (let i = 0; i < ids.length; i += TAMANHO_LOTE) {
-    const lote = ids.slice(i, i + TAMANHO_LOTE);
-    const { rows } = await cliente.execute({
-      sql: `SELECT l.*, NULL AS distancia_m,
-                   c.status, c.motivo_perda, c.notas, c.tentativas,
-                   c.ultimo_contato_em, c.respondeu_em, c.valor_fechado,
-                   e.email, e.instagram, e.status AS status_enriquecimento
-            FROM leads l
-            JOIN lead_crm c ON c.place_id = l.place_id
-            LEFT JOIN enrichment e ON e.place_id = l.place_id
-            WHERE l.place_id IN (${lote.map(() => '?').join(',')})`,
-      args: lote,
-    });
-    leads.push(...rows.map((linha) => paraLead(linha, config)));
-  }
-
-  return leads;
+  return linhas.map((linha) => paraLead(linha, config));
 }
 
 /**
  * Leads dentro de um circulo, independentemente da busca que os trouxe.
- * Usado pelo cache: quando uma celula ja foi consultada, a lista vem daqui em
- * vez de gastar requisicao na API.
+ * A caixa envolvente e um quadrado; o circulo de verdade sai do haversine.
  */
 export async function leadsNoCirculo(
   centro: LatLng,
   raioM: number,
   config: ConfigCooldown = COOLDOWN_PADRAO,
 ): Promise<LeadCompleto[]> {
-  const cliente = await db();
+  const sql = await db();
   const caixa = boundingBox(centro, raioM);
 
-  const { rows } = await cliente.execute({
-    sql: `SELECT l.*, NULL AS distancia_m,
-                 c.status, c.motivo_perda, c.notas, c.tentativas,
-                 c.ultimo_contato_em, c.respondeu_em, c.valor_fechado,
-                 e.email, e.instagram, e.status AS status_enriquecimento
-          FROM leads l
-          JOIN lead_crm c ON c.place_id = l.place_id
-          LEFT JOIN enrichment e ON e.place_id = l.place_id
-          WHERE l.lat BETWEEN ? AND ? AND l.lng BETWEEN ? AND ?`,
-    args: [caixa.minLat, caixa.maxLat, caixa.minLng, caixa.maxLng],
-  });
+  const linhas = await sql`
+    SELECT l.*, NULL::double precision AS distancia_m,
+           c.status, c.motivo_perda, c.notas, c.tentativas,
+           c.ultimo_contato_em, c.respondeu_em, c.valor_fechado,
+           e.email, e.instagram, e.status AS status_enriquecimento
+    FROM leads l
+    JOIN lead_crm c ON c.place_id = l.place_id
+    LEFT JOIN enrichment e ON e.place_id = l.place_id
+    WHERE l.lat BETWEEN ${caixa.minLat} AND ${caixa.maxLat}
+      AND l.lng BETWEEN ${caixa.minLng} AND ${caixa.maxLng}
+  `;
 
-  // A caixa e um quadrado; o circulo de verdade sai do haversine.
-  return rows
+  return linhas
     .map((linha) => paraLead(linha, config))
     .filter((l) => haversineMeters(centro, { lat: l.lat, lng: l.lng }) <= raioM);
 }
