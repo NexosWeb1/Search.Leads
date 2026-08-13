@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { Circle, MapContainer, TileLayer, useMap } from 'react-leaflet';
 import type { LeadCompleto } from '@/lib/db/leads';
 import { COR_FAIXA } from '@/lib/scoring/score';
+import { useTemaEscuro } from '@/lib/hooks';
 
 /**
  * Mapa dos leads.
@@ -187,6 +188,31 @@ function ObservarTamanho() {
   return null;
 }
 
+/**
+ * Estilo do circulo do raio, com cor literal e nao variavel CSS.
+ *
+ * O mapa roda com `preferCanvas`, e canvas nao resolve `var(--cor)`: recebe a
+ * string crua e cai no preto padrao. Era por isso que o circulo sumia contra o
+ * mapa escuro.
+ *
+ * Os dois passos foram escolhidos para a superficie de cada tema, e nao um
+ * clareado do outro. No escuro o traco e mais grosso porque os tiles invertidos
+ * tem muito contraste interno e um fio fino se perde no meio das ruas.
+ */
+const CIRCULO_CLARO = {
+  color: '#15803d',
+  weight: 2,
+  fillColor: '#22c55e',
+  fillOpacity: 0.07,
+} as const;
+
+const CIRCULO_ESCURO = {
+  color: '#4ade80',
+  weight: 2.5,
+  fillColor: '#22c55e',
+  fillOpacity: 0.1,
+} as const;
+
 export default function MapaLeads({
   leads,
   centro,
@@ -195,6 +221,9 @@ export default function MapaLeads({
   aoSelecionar,
   aoDestacar,
 }: PropsMapa) {
+  const escuro = useTemaEscuro();
+  const estiloCirculo = escuro ? CIRCULO_ESCURO : CIRCULO_CLARO;
+
   const inicial = useMemo<[number, number]>(
     () => (centro ? [centro.lat, centro.lng] : CENTRO_PADRAO),
     // Somente na montagem: o reenquadramento posterior fica com AjustarEnquadramento.
@@ -221,12 +250,7 @@ export default function MapaLeads({
         <Circle
           center={[centro.lat, centro.lng]}
           radius={raioKm * 1000}
-          pathOptions={{
-            color: 'var(--color-marca-600)',
-            weight: 1.5,
-            fillColor: 'var(--color-marca-500)',
-            fillOpacity: 0.06,
-          }}
+          pathOptions={estiloCirculo}
         />
       )}
 

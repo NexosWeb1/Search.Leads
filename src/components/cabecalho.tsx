@@ -1,14 +1,28 @@
 'use client';
 
-import { useSyncExternalStore } from 'react';
-import { IconeAlvo, IconeLua, IconeSol } from './icones';
+import Image from 'next/image';
+import { useTemaEscuro } from '@/lib/hooks';
+import { IconeLua, IconeSol } from './icones';
 
 export function CabecalhoApp() {
   return (
     <header className="flex items-center justify-between gap-2 border-b border-borda p-3">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-marca-600 text-white">
-          <IconeAlvo className="size-4.5" />
+      <div className="flex min-w-0 items-center gap-2.5">
+        {/*
+          A marca e preta sobre fundo branco, entao vai numa pastilha clara em vez
+          de solta na sidebar: no tema escuro ela sumiria, e no claro encostaria
+          no fundo sem limite definido. A pastilha resolve os dois e mantem o
+          arquivo original intocado.
+        */}
+        <span className="grid size-9 shrink-0 place-items-center overflow-hidden rounded-lg bg-white ring-1 ring-borda">
+          <Image
+            src="/logo-nexos.jpg"
+            alt=""
+            width={36}
+            height={36}
+            priority
+            className="size-8 object-contain"
+          />
         </span>
         <div className="min-w-0">
           <h1 translate="no" className="truncate text-sm font-semibold text-texto">
@@ -24,28 +38,8 @@ export function CabecalhoApp() {
   );
 }
 
-/**
- * O tema mora na classe do elemento html, aplicada por um script no layout antes
- * da primeira pintura. Isso o torna estado de um sistema externo, e nao estado do
- * React, entao a leitura certa e useSyncExternalStore: ele resolve a hidratacao
- * (o servidor usa o snapshot dele) sem precisar de efeito nem de setState.
- */
-function inscrever(aoMudar: () => void): () => void {
-  const observador = new MutationObserver(aoMudar);
-  observador.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ['class'],
-  });
-  return () => observador.disconnect();
-}
-
-const lerCliente = () => document.documentElement.classList.contains('dark');
-// No servidor nao existe classe para ler. O script do layout corrige antes de
-// qualquer pintura, entao nao ha piscada.
-const lerServidor = () => false;
-
 function BotaoTema() {
-  const escuro = useSyncExternalStore(inscrever, lerCliente, lerServidor);
+  const escuro = useTemaEscuro();
 
   const alternar = () => {
     const proximo = !escuro;

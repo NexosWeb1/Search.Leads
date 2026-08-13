@@ -1,6 +1,37 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+
+/**
+ * Le o tema atual.
+ *
+ * O tema mora na classe do elemento html, aplicada por um script no layout antes
+ * da primeira pintura, entao e estado de um sistema externo e nao do React. Por
+ * isso useSyncExternalStore: ele resolve a hidratacao sozinho, sem efeito nem
+ * setState.
+ *
+ * Existe como hook compartilhado porque dois lugares precisam: o botao que
+ * alterna o tema e o mapa, que precisa de cor literal (canvas nao resolve
+ * variavel CSS).
+ */
+function inscreverNoTema(aoMudar: () => void): () => void {
+  const observador = new MutationObserver(aoMudar);
+  observador.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['class'],
+  });
+  return () => observador.disconnect();
+}
+
+export function useTemaEscuro(): boolean {
+  return useSyncExternalStore(
+    inscreverNoTema,
+    () => document.documentElement.classList.contains('dark'),
+    // No servidor nao ha classe para ler. O script do layout corrige antes de
+    // qualquer pintura, entao nao ha piscada.
+    () => false,
+  );
+}
 
 /** Atrasa o valor para nao disparar uma requisicao a cada tecla digitada. */
 export function useDebounce<T>(valor: T, ms = 350): T {
