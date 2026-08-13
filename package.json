@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "scan": "tsx scripts/scan.ts",
     "semear": "tsx scripts/semear.ts",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts",
+    "senha": "tsx scripts/senha.ts",
+    "migrar-turso": "tsx scripts/migrar-turso.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

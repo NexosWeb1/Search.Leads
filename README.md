@@ -127,17 +127,95 @@ tentativa, nao inicia periodo de espera, e o lead volta para a fila depois do
 enriquecimento. Mandou e nao fechou e falha *comercial*, com motivo. Misturar os
 dois faria uma lista com telefones ruins parecer uma abordagem ruim.
 
+## Acesso
+
+A plataforma e trancada por senha unica. Para definir a sua:
+
+```bash
+npm run senha
+```
+
+O comando pede a senha sem exibir na tela, e devolve duas linhas para colar no
+`.env.local`:
+
+```
+SENHA_ACESSO_HASH=scrypt:...
+SESSAO_SEGREDO=...
+```
+
+A senha em si nao e guardada em lugar nenhum. O que vai para a variavel e o hash
+scrypt dela, entao quem ler as variaveis do servidor leva o hash e nao a senha, e
+nao consegue reusa-la em outro lugar seu.
+
+Algumas decisoes que valem saber:
+
+- **A tranca cobre as rotas de API, nao so a tela.** Proteger apenas a interface
+  seria teatro: `/api/leads` devolve sua carteira inteira e `/api/search` gasta
+  sua cota, e nenhuma das duas passa pela tela de login.
+- **Em producao, faltar a configuracao bloqueia tudo.** Em desenvolvimento apenas
+  avisa. A assimetria evita o acidente de publicar a ferramenta destrancada por
+  ter esquecido de definir uma variavel.
+- **A sessao dura 30 dias** num cookie assinado, HttpOnly e Secure. Nao ha estado
+  no servidor, o que importa em serverless.
+- **Esqueceu a senha?** Rode `npm run senha` de novo e troque a variavel. Para
+  derrubar todas as sessoes abertas de uma vez, gere um segredo novo com
+  `npm run senha -- --so-segredo`.
+
+## Hospedar no Netlify
+
+Duas coisas precisam ser resolvidas antes do primeiro deploy.
+
+**1. O banco.** Funcao serverless tem disco efemero: o `data/leads.db` seria
+apagado a cada deploy e a cada reciclagem de instancia. Os leads voce recompraria
+rodando a varredura de novo, mas o historico de contato nao volta. Migre para o
+Turso, que e SQLite hospedado e tem plano gratuito folgado:
+
+```bash
+turso auth signup
+turso db create search-leads
+turso db show search-leads --url
+turso db tokens create search-leads
+
+npm run migrar-turso -- --destino libsql://... --token ... --so-conferir
+npm run migrar-turso -- --destino libsql://... --token ...
+```
+
+O comando e idempotente e confere as contagens no fim. Mantenha o `.env.local`
+apontando para o arquivo local, para continuar desenvolvendo sem tocar em
+producao.
+
+**2. As variaveis no Netlify.** Em Site configuration, Environment variables:
+
+| Variavel | Valor |
+|---|---|
+| `GOOGLE_MAPS_API_KEY` | a mesma do `.env.local` |
+| `DATABASE_URL` | o `libsql://...` do Turso |
+| `DATABASE_AUTH_TOKEN` | o token do Turso |
+| `SENHA_ACESSO_HASH` | de `npm run senha` |
+| `SESSAO_SEGREDO` | de `npm run senha` |
+
+O `netlify.toml` ja esta no repositorio com o plugin do Next, cabecalhos de
+seguranca e `noindex` (a ferramenta e interna, aparecer em busca so atrai
+tentativa de acesso).
+
+Um detalhe de custo: o Netlify tem limite de tempo por funcao, 10 s no plano
+gratuito. Varredura de raio grande pode estourar esse tempo em producao mesmo com
+o teto de requisicoes. Se acontecer, reduza o raio ou rode a varredura pela linha
+de comando na sua maquina, que nao tem esse limite.
+
 ## Comandos
 
 | Comando | O que faz |
 |---|---|
 | `npm run dev` | Servidor de desenvolvimento |
 | `npm run build` | Build de producao |
-| `npm test` | 96 testes do nucleo (grade, score, telefone, cooldown, banco, crawler) |
+| `npm test` | 113 testes (grade, score, telefone, cooldown, banco, crawler, login) |
 | `npm run typecheck` | Verificacao de tipos |
 | `npm run lint` | ESLint |
+| `npm run senha` | Gera a senha de acesso e o segredo de sessao |
 | `npm run scan -- ...` | Varredura pela linha de comando |
 | `npm run semear` | Dados de demonstracao |
+| `npm run migrar-turso -- ...` | Copia o banco local para o Turso |
 
 ## Estrutura
 
@@ -152,7 +230,9 @@ src/
       export/       CSV e XLSX
       stats/        agregacao do painel
       geocode/      cidade para coordenada
+  proxy.ts          tranca: exige sessao valida em pagina e em rota de API
   lib/
+    auth/           senha com scrypt e sessao assinada
     search/         grade hexagonal, subdivisao e orquestrador
     places/         client da Places API, field mask e controle de orcamento
     scoring/        score, faixas e classificacao do que e "ter site"
@@ -163,7 +243,9 @@ src/
 scripts/
   scan.ts           varredura pelo terminal
   semear.ts         dados de demonstracao
-tests/              96 testes, rodam sem chave de API
+  senha.ts          gera a senha de acesso
+  migrar-turso.ts   copia o banco local para o Turso
+tests/              113 testes, rodam sem chave de API
 ```
 
 ## Decisoes que valem saber
@@ -192,7 +274,8 @@ resultado leva icone e rotulo.
 
 - **Estado na URL.** Filtro, aba e busca selecionada vivem em memoria; recarregar
   a pagina volta ao inicio e nao da para mandar um link de uma lista filtrada.
-- **Multiusuario.** E de uso individual: sem login, sem separacao por conta.
+- **Multiusuario.** O acesso e por senha unica, sem contas separadas. Nao da
+  para saber quem contatou quem, nem restringir quem pode gastar cota.
 - **Enriquecimento de quem nao tem site nenhum.** Sem URL nao ha de onde extrair
   contato. Buscar o Instagram pelo nome exigiria raspar o Instagram, que bloqueia
   e proibe.

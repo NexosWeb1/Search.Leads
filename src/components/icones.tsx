@@ -174,6 +174,13 @@ export const IconeGlobo = (p: Props) => (
   </svg>
 );
 
+export const IconeSair = (p: Props) => (
+  <svg {...base(p)}>
+    <path d="M15 4h3.5a1.5 1.5 0 0 1 1.5 1.5v13a1.5 1.5 0 0 1-1.5 1.5H15" />
+    <path d="M10 8l-4 4 4 4M6 12h9" />
+  </svg>
+);
+
 export const IconeCarregando = (p: Props) => (
   <svg {...base(p)} className={`animate-spin ${p.className ?? ''}`}>
     <path d="M12 3.5a8.5 8.5 0 1 0 8.5 8.5" />

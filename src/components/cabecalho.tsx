@@ -1,8 +1,9 @@
 'use client';
 
 import Image from 'next/image';
+import { useState } from 'react';
 import { useTemaEscuro } from '@/lib/hooks';
-import { IconeLua, IconeSol } from './icones';
+import { IconeLua, IconeSair, IconeSol } from './icones';
 
 export function CabecalhoApp() {
   return (
@@ -33,8 +34,47 @@ export function CabecalhoApp() {
           </p>
         </div>
       </div>
-      <BotaoTema />
+      <div className="flex shrink-0 items-center gap-1.5">
+        <BotaoTema />
+        <BotaoSair />
+      </div>
     </header>
+  );
+}
+
+function BotaoSair() {
+  const [saindo, setSaindo] = useState(false);
+
+  const sair = async () => {
+    setSaindo(true);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } finally {
+      /*
+       * Recarregamento completo, e nao navegacao do router.
+       *
+       * O lint prefere router.push por causa da experiencia de aplicacao unica,
+       * e para navegacao comum ele esta certo. Aqui a excecao e deliberada: sair
+       * precisa garantir que nada sobreviva, nem o estado React com a carteira
+       * de leads em memoria, nem o cache de payload do roteador, que poderia
+       * devolver uma tela autenticada ao apertar voltar.
+       */
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.href = '/entrar';
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={() => void sair()}
+      disabled={saindo}
+      title="Sair da plataforma"
+      aria-label="Sair da plataforma"
+      className="grid size-8 shrink-0 place-items-center rounded-lg border border-borda text-texto-suave transition-colors hover:bg-superficie-3 disabled:opacity-60"
+    >
+      <IconeSair className="size-4" />
+    </button>
   );
 }
 
