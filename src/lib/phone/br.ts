@@ -88,7 +88,40 @@ export function normalizarTelefone(entrada: string | null | undefined): Telefone
   };
 }
 
-/** Monta o link do WhatsApp com a mensagem ja preenchida. */
-export function linkWhatsApp(e164: string, mensagem: string): string {
-  return `https://wa.me/${e164}?text=${encodeURIComponent(mensagem)}`;
+export type DestinoWhatsApp = 'web' | 'app';
+
+/**
+ * Monta o link do WhatsApp com a mensagem ja preenchida.
+ *
+ * `web` abre direto a conversa no WhatsApp Web, com o texto no campo de envio.
+ * `app` usa o wa.me, que passa por uma tela intermediaria perguntando entre
+ * abrir o aplicativo ou seguir para o navegador.
+ *
+ * O padrao e `web` porque este e um painel de computador: pular aquela tela
+ * economiza dois cliques por lead, e numa fila de cem isso e a diferenca entre
+ * usar e desistir. Quem trabalha pelo celular precisa de `app`, senao o
+ * navegador tenta abrir o WhatsApp Web num aparelho que so tem o aplicativo.
+ */
+export function linkWhatsApp(
+  e164: string,
+  mensagem: string,
+  destino: DestinoWhatsApp = 'web',
+): string {
+  const texto = encodeURIComponent(mensagem);
+  return destino === 'web'
+    ? `https://web.whatsapp.com/send?phone=${e164}&text=${texto}`
+    : `https://wa.me/${e164}?text=${texto}`;
 }
+
+/**
+ * Nome fixo da aba do WhatsApp.
+ *
+ * Reaproveitar a mesma aba e o que impede o navegador de acumular uma aba por
+ * lead: numa fila de duzentos, sem isso, sao duzentas abas abertas.
+ *
+ * Nao vai `noopener` junto de proposito. Com ele o navegador ignora o nome e
+ * abre uma aba nova a cada vez, que e exatamente o que se quer evitar. A
+ * contrapartida e que a pagina aberta enxerga `window.opener`, e aqui ela e
+ * sempre o proprio WhatsApp.
+ */
+export const ABA_WHATSAPP = 'searchleads_whatsapp';

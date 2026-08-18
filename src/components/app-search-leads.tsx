@@ -7,8 +7,9 @@ import type { LocalGeocodificado } from '@/lib/places/client';
 import type { ProgressoVarredura, ResultadoVarredura } from '@/lib/search/runner';
 import type { Busca, ConsumoDoMes } from '@/lib/db/searches';
 import { FILTROS_INICIAIS, filtrosParaQuery, type EstadoFiltros } from '@/lib/filtros';
+import { usePreferenciaLocal } from '@/lib/hooks';
 import { lerEventos } from '@/lib/sse';
-import { linkWhatsApp } from '@/lib/phone/br';
+import { ABA_WHATSAPP, linkWhatsApp, type DestinoWhatsApp } from '@/lib/phone/br';
 import { preencherTemplate } from '@/lib/formato';
 import { PainelBusca } from './sidebar/painel-busca';
 import { PainelFiltros } from './sidebar/painel-filtros';
@@ -33,6 +34,8 @@ const MapaLeads = dynamic(() => import('./map/mapa-leads'), {
     </div>
   ),
 });
+
+const DESTINOS_ZAP = ['web', 'app'] as const;
 
 const MENSAGEM_PADRAO = `Oi! Tudo bem?
 
@@ -76,6 +79,16 @@ export function AppSearchLeads() {
   const [disparoAberto, setDisparoAberto] = useState(false);
   const [mensagem, setMensagem] = useState(MENSAGEM_PADRAO);
   const [exportando, setExportando] = useState(false);
+  /*
+   * Onde abrir o WhatsApp. Fica guardado no navegador porque e caracteristica da
+   * maquina, e nao da conta: o mesmo usuario prospecta do computador e responde
+   * pelo celular.
+   */
+  const [destinoZap, trocarDestinoZap] = usePreferenciaLocal<DestinoWhatsApp>(
+    'destinoZap',
+    'web',
+    DESTINOS_ZAP,
+  );
   const [enriquecendo, setEnriquecendo] = useState(false);
   const [progressoEnriquecimento, setProgressoEnriquecimento] = useState<{
     feitos: number;
@@ -287,7 +300,7 @@ export function AppSearchLeads() {
       }
 
       const texto = mensagemPara(lead);
-      window.open(linkWhatsApp(lead.telefoneE164, texto), '_blank', 'noopener');
+      window.open(linkWhatsApp(lead.telefoneE164, texto, destinoZap), ABA_WHATSAPP);
 
       await fetch('/api/contacts', {
         method: 'POST',
@@ -302,7 +315,7 @@ export function AppSearchLeads() {
 
       recarregarLeads();
     },
-    [mensagemPara, recarregarLeads],
+    [mensagemPara, recarregarLeads, destinoZap],
   );
 
   const abrirDetalhes = useCallback((lead: LeadCompleto) => setLeadAberto(lead), []);
@@ -530,6 +543,8 @@ export function AppSearchLeads() {
         <ModoDisparo
           fila={filaDisparo}
           montarMensagem={mensagemPara}
+          destino={destinoZap}
+          aoTrocarDestino={trocarDestinoZap}
           aoFechar={() => {
             setDisparoAberto(false);
             recarregarLeads();

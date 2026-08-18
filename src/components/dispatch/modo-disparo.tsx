@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LeadCompleto } from '@/lib/db/leads';
 import type { Entrega } from '@/lib/db/schema';
-import { linkWhatsApp } from '@/lib/phone/br';
+import { ABA_WHATSAPP, linkWhatsApp, type DestinoWhatsApp } from '@/lib/phone/br';
 import { formatarNumero, tempoRelativo } from '@/lib/formato';
 import { useFocoPreso } from '@/lib/hooks';
 import { TarjaContato } from '@/components/leads/tarja-contato';
@@ -19,10 +19,18 @@ import {
 /**
  * Envio sequencial de WhatsApp.
  *
- * A ferramenta nao envia nada sozinha: ela abre o WhatsApp com a mensagem
- * pronta e voce clica em enviar. Isso e proposital. Automatizar o envio exigiria
- * API nao oficial, com risco real de banir seu numero, e o ganho seria pequeno
- * perto do risco.
+ * A ferramenta abre a conversa com a mensagem pronta e voce aperta Enter. O
+ * ultimo passo continua sendo seu, e isso nao e falta de recurso.
+ *
+ * Enviar sozinho so seria possivel por dois caminhos, e nenhum serve aqui. A API
+ * oficial da Meta exige opt-in do destinatario e template aprovado, o que
+ * prospeccao fria nao tem por definicao. As bibliotecas nao oficiais funcionam,
+ * mas violam os Termos e o banimento atinge o numero, que aqui e o comercial,
+ * com as conversas de clientes dentro; alem disso precisariam de um servidor
+ * permanente segurando a sessao, incompativel com funcao serverless.
+ *
+ * O que da para eliminar sao os passos intermediarios, e isso esta feito: a
+ * conversa abre direto, sempre na mesma aba, com o texto preenchido.
  *
  * As protecoes que importam ficam aqui: contador diario, aviso de lead ja
  * abordado com o texto da ultima mensagem, e registro automatico de cada
@@ -32,10 +40,18 @@ import {
 interface Props {
   fila: LeadCompleto[];
   montarMensagem: (lead: LeadCompleto) => string;
+  destino: DestinoWhatsApp;
+  aoTrocarDestino: (destino: DestinoWhatsApp) => void;
   aoFechar: () => void;
 }
 
-export function ModoDisparo({ fila, montarMensagem, aoFechar }: Props) {
+export function ModoDisparo({
+  fila,
+  montarMensagem,
+  destino,
+  aoTrocarDestino,
+  aoFechar,
+}: Props) {
   const [indice, setIndice] = useState(0);
   const [enviados, setEnviados] = useState(0);
   const [pulados, setPulados] = useState(0);
@@ -110,10 +126,10 @@ export function ModoDisparo({ fila, montarMensagem, aoFechar }: Props) {
 
   const enviar = useCallback(() => {
     if (!lead?.telefoneE164 || ocupado) return;
-    window.open(linkWhatsApp(lead.telefoneE164, texto), '_blank', 'noopener');
+    window.open(linkWhatsApp(lead.telefoneE164, texto, destino), ABA_WHATSAPP);
     setEnviados((n) => n + 1);
     void registrar('enviado', texto);
-  }, [lead, texto, ocupado, registrar]);
+  }, [lead, texto, ocupado, registrar, destino]);
 
   const pular = useCallback(() => {
     setPulados((n) => n + 1);
@@ -273,8 +289,31 @@ export function ModoDisparo({ fila, montarMensagem, aoFechar }: Props) {
                   className="rolagem-fina w-full resize-y rounded-lg border border-borda-campo bg-superficie-2 p-2.5 text-xs leading-relaxed text-texto"
                 />
                 <p className="mt-1 text-[0.6875rem] text-texto-fraco">
-                  Ctrl + Enter envia e avanca. Esc fecha.
+                  Ctrl + Enter abre o WhatsApp e avanca. Esc fecha.
                 </p>
+
+                <div className="mt-3 flex items-center gap-2 rounded-lg bg-superficie-2 p-2">
+                  <label
+                    htmlFor="destino-zap"
+                    className="text-[0.6875rem] font-medium text-texto-suave"
+                  >
+                    Abrir em
+                  </label>
+                  <select
+                    id="destino-zap"
+                    value={destino}
+                    onChange={(e) => aoTrocarDestino(e.target.value as DestinoWhatsApp)}
+                    className="rounded-md border border-borda-campo bg-superficie px-2 py-1 text-[0.6875rem] text-texto"
+                  >
+                    <option value="web">WhatsApp Web, direto na conversa</option>
+                    <option value="app">Aplicativo, passando pelo wa.me</option>
+                  </select>
+                  <span className="text-[0.6875rem] text-texto-fraco">
+                    {destino === 'web'
+                      ? 'Sempre na mesma aba'
+                      : 'Escolha esta se usa o celular'}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -312,7 +351,8 @@ export function ModoDisparo({ fila, montarMensagem, aoFechar }: Props) {
 
             <div className="border-t border-borda px-4 py-2 text-[0.6875rem] text-texto-fraco">
               {restantes} {restantes === 1 ? 'restante' : 'restantes'} &middot; {enviados}{' '}
-              {enviados === 1 ? 'enviado' : 'enviados'} nesta sessao
+              {enviados === 1 ? 'aberto' : 'abertos'} nesta sessao &middot; falta apertar
+              Enter no WhatsApp
             </div>
           </>
         )}

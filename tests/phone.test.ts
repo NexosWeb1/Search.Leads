@@ -74,9 +74,24 @@ test('celular precisa comecar com 9', () => {
   assert.equal(r.valido, false);
 });
 
-test('link do WhatsApp escapa a mensagem', () => {
-  const link = linkWhatsApp('5551999508056', 'Oi, tudo bem? Vi a Padaria & Cia');
+test('o padrao abre direto no WhatsApp Web, sem tela intermediaria', () => {
+  // O wa.me insere uma pagina perguntando entre app e navegador. Num painel de
+  // computador isso e um passo a mais por lead, e a fila tem centenas.
+  const link = linkWhatsApp('5551999508056', 'Oi, tudo bem?');
+  assert.ok(link.startsWith('https://web.whatsapp.com/send?phone=5551999508056&text='));
+});
+
+test('o destino app usa o wa.me, para quem trabalha pelo celular', () => {
+  const link = linkWhatsApp('5551999508056', 'Oi, tudo bem?', 'app');
   assert.ok(link.startsWith('https://wa.me/5551999508056?text='));
-  assert.ok(link.includes('%26'), 'o e comercial precisa ir escapado');
-  assert.ok(!link.includes(' '), 'nao pode sobrar espaco cru na URL');
+});
+
+test('a mensagem vai escapada nos dois destinos', () => {
+  for (const destino of ['web', 'app'] as const) {
+    const link = linkWhatsApp('5551999508056', 'Oi! Vi a Padaria & Cia, tudo bem?', destino);
+    assert.ok(link.includes('%26'), `${destino}: o e comercial precisa ir escapado`);
+    assert.ok(!link.includes(' '), `${destino}: nao pode sobrar espaco cru na URL`);
+    // O texto precisa vir depois do telefone, senao o WhatsApp ignora um dos dois.
+    assert.ok(link.indexOf('5551999508056') < link.indexOf('text='), destino);
+  }
 });
