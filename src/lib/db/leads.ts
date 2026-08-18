@@ -420,20 +420,22 @@ export async function listarLeads(
   const limite = Math.min(filtros.limite ?? 500, 2000);
   const deslocamento = filtros.deslocamento ?? 0;
 
-  const [contagem] = await sql<{ n: string }[]>`
-    SELECT COUNT(*) AS n
-    FROM leads l
-    JOIN lead_crm c ON c.place_id = l.place_id
-    LEFT JOIN enrichment e ON e.place_id = l.place_id
-    ${juncaoBusca()}
-    WHERE ${onde()}
-  `;
-
+  /*
+   * O total vem junto, por COUNT(*) OVER(), em vez de numa segunda consulta.
+   *
+   * Eram duas idas ao banco para a mesma pergunta: uma para contar e outra para
+   * listar. Com a janela, o Postgres calcula o total do conjunto filtrado
+   * durante a mesma varredura que ja faz para montar a pagina. Numa conexao com
+   * o Supabase em Sao Paulo, cada ida e volta pesa, e esta some.
+   *
+   * O valor repete em toda linha, entao basta ler o da primeira.
+   */
   const linhas = await sql`
     SELECT l.*, sl.distancia_m,
            c.status, c.motivo_perda, c.notas, c.tentativas,
            c.ultimo_contato_em, c.respondeu_em, c.valor_fechado,
-           e.email, e.instagram, e.status AS status_enriquecimento
+           e.email, e.instagram, e.status AS status_enriquecimento,
+           COUNT(*) OVER() AS total_filtrado
     FROM leads l
     JOIN lead_crm c ON c.place_id = l.place_id
     LEFT JOIN enrichment e ON e.place_id = l.place_id
@@ -443,10 +445,28 @@ export async function listarLeads(
     LIMIT ${limite} OFFSET ${deslocamento}
   `;
 
-  return {
-    total: Number(contagem?.n ?? 0),
-    leads: linhas.map((linha) => paraLead(linha, config)),
-  };
+  /*
+   * Sem linhas, a janela nao devolve total. Sem deslocamento isso significa
+   * mesmo zero; com deslocamento alem do fim significa apenas que esta pagina
+   * esta vazia, e ai o total precisa de uma consulta propria. Nao ha paginacao
+   * na tela hoje, mas devolver zero como se a lista estivesse vazia seria um
+   * numero errado sem aviso no dia em que houver.
+   */
+  let total = Number(linhas[0]?.total_filtrado ?? 0);
+
+  if (linhas.length === 0 && deslocamento > 0) {
+    const [contagem] = await sql<{ n: string }[]>`
+      SELECT COUNT(*) AS n
+      FROM leads l
+      JOIN lead_crm c ON c.place_id = l.place_id
+      LEFT JOIN enrichment e ON e.place_id = l.place_id
+      ${juncaoBusca()}
+      WHERE ${onde()}
+    `;
+    total = Number(contagem?.n ?? 0);
+  }
+
+  return { total, leads: linhas.map((linha) => paraLead(linha, config)) };
 }
 
 export async function carregarLeadsPorIds(

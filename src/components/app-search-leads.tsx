@@ -110,9 +110,19 @@ export function AppSearchLeads() {
 
   const queryLeads = filtrosParaQuery(filtros, searchId);
 
+  /*
+   * Numero do pedido em voo. Sem ele o indicador de carregamento trava: quando
+   * um pedido e substituido por outro, o `finally` do antigo era ignorado, e se
+   * o novo nao completasse ninguem mais desligava o "Carregando". Comparando com
+   * o contador, o pedido mais recente sempre desliga, aconteca o que acontecer
+   * com os anteriores.
+   */
+  const pedidoLeads = useRef(0);
+
   useEffect(() => {
+    const meu = ++pedidoLeads.current;
     const controle = new AbortController();
-    let ativo = true;
+    const atual = () => meu === pedidoLeads.current;
 
     fetch(`/api/leads?${queryLeads}`, { signal: controle.signal })
       .then(async (r) => {
@@ -121,23 +131,20 @@ export function AppSearchLeads() {
         return dados as { leads: LeadCompleto[]; total: number };
       })
       .then((dados) => {
-        if (!ativo) return;
+        if (!atual()) return;
         setLeads(dados.leads);
         setTotalListado(dados.total);
         setErroLeads(null);
       })
       .catch((erro: unknown) => {
-        if (!ativo || (erro instanceof Error && erro.name === 'AbortError')) return;
+        if (!atual() || (erro instanceof Error && erro.name === 'AbortError')) return;
         setErroLeads(erro instanceof Error ? erro.message : 'Falha ao carregar leads');
       })
       .finally(() => {
-        if (ativo) setCarregandoLeads(false);
+        if (atual()) setCarregandoLeads(false);
       });
 
-    return () => {
-      ativo = false;
-      controle.abort();
-    };
+    return () => controle.abort();
   }, [queryLeads, versaoLeads]);
 
   useEffect(() => {
@@ -197,13 +204,25 @@ export function AppSearchLeads() {
 
       for await (const { evento, dados } of lerEventos(resposta.body)) {
         if (evento === 'progresso') {
-          const p = dados as ProgressoVarredura;
-          setProgresso(p);
-          if (!searchId) setSearchId(p.searchId);
+          /*
+           * O identificador da busca NAO e gravado aqui, so ao concluir.
+           *
+           * Gravar durante o progresso trocava o filtro da lista no meio da
+           * varredura e disparava a leitura quando o banco ainda estava vazio,
+           * o que resultava em "0 na lista" mesmo com a busca achando centenas.
+           */
+          setProgresso(dados as ProgressoVarredura);
         } else if (evento === 'concluido') {
           const r = dados as ResultadoVarredura;
           setResultado(r);
           setSearchId(r.searchId);
+          /*
+           * Recarrega explicitamente em vez de confiar na troca do
+           * identificador. Repetir a mesma busca devolve o mesmo id, o React
+           * descarta a atualizacao por ser identica, e sem esta chamada a lista
+           * ficaria mostrando o resultado anterior.
+           */
+          recarregarLeads();
         } else if (evento === 'erro') {
           setErroBusca((dados as { mensagem: string }).mensagem);
         }
@@ -219,7 +238,7 @@ export function AppSearchLeads() {
       abortarBusca.current = null;
       recarregarBuscas();
     }
-  }, [local, nichoId, raioKm, searchId, recarregarBuscas]);
+  }, [local, nichoId, raioKm, recarregarBuscas, recarregarLeads]);
 
   const cancelarBusca = useCallback(() => {
     abortarBusca.current?.abort();
