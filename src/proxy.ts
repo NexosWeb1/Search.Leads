@@ -12,7 +12,12 @@
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { clienteProxy, exigirAutenticacao, lerConfigSupabase } from '@/lib/auth/supabase';
+import {
+  autenticacaoDesligada,
+  clienteProxy,
+  exigirAutenticacao,
+  lerConfigSupabase,
+} from '@/lib/auth/supabase';
 
 /** Caminhos que existem justamente para quem ainda nao entrou. */
 const PUBLICOS = ['/entrar', '/api/auth'];
@@ -26,6 +31,21 @@ export async function proxy(requisicao: NextRequest) {
 
   // Precisa existir antes da checagem para receber o cookie renovado.
   const resposta = NextResponse.next({ request: requisicao });
+
+  if (autenticacaoDesligada()) {
+    /*
+     * Aviso a cada pedido de pagina, de proposito. Uma tranca desligada em
+     * silencio e como nao ter tranca: o aviso repetido no terminal existe para
+     * voce nao esquecer que ela esta assim.
+     */
+    if (!pathname.startsWith('/api/')) {
+      console.warn(
+        '[Search Leads] AUTH_DESLIGADA=true: a plataforma esta SEM TRANCA. ' +
+          'Remova essa variavel do .env.local ao terminar de configurar o banco.',
+      );
+    }
+    return resposta;
+  }
 
   if (!lerConfigSupabase().configurado) {
     if (!exigirAutenticacao()) return resposta;

@@ -71,7 +71,15 @@ function conexao(): postgres.Sql {
       // que o certificado esteja no armazenamento local.
       ssl: url.includes('localhost') ? false : 'require',
       onnotice: () => {},
-      connection: schema ? { search_path: `${schema},public` } : undefined,
+      connection: {
+        ...(schema ? { search_path: `${schema},public` } : {}),
+        /*
+         * Teto por comando. Sem ele, uma consulta que trava fica pendurada para
+         * sempre e a tela nao mostra erro nenhum, so um carregamento eterno.
+         * Com o teto vira um erro legivel, que da para diagnosticar.
+         */
+        statement_timeout: Number(process.env.DB_TIMEOUT_MS ?? 30000),
+      },
     });
   }
   return cache.__sl_sql;
@@ -83,6 +91,20 @@ async function migrar(sql: postgres.Sql): Promise<void> {
     await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
     await sql.unsafe(`SET search_path TO ${schema}, public`);
   }
+
+  /*
+   * Caminho rapido: se a tabela principal ja existe, o schema esta montado e nao
+   * ha o que fazer.
+   *
+   * Isso importa mais do que parece. Sem a checagem, todo inicio de processo
+   * dispara mais de vinte comandos DDL, um por vez, contra um banco do outro
+   * lado da rede. Em serverless isso acontece a cada partida a frio, some com o
+   * tempo de resposta da primeira requisicao e ainda pega lock de tabela a toa.
+   */
+  const [pronto] = await sql<{ existe: boolean }[]>`
+    SELECT to_regclass(${(schema ?? 'public') + '.leads'}) IS NOT NULL AS existe
+  `;
+  if (pronto?.existe) return;
 
   for (const comando of SCHEMA) {
     await sql.unsafe(comando);

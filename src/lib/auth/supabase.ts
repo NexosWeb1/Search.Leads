@@ -48,6 +48,24 @@ export function exigirAutenticacao(): boolean {
   return process.env.NODE_ENV === 'production';
 }
 
+/**
+ * Desliga a tranca por completo, mesmo com o Supabase configurado.
+ *
+ * Existe para o periodo em que o banco ainda esta sendo montado e a tela de
+ * login so estorva. E temporario e deve sair.
+ *
+ * A trava contra acidente: o Netlify define NETLIFY=true no build e na execucao,
+ * e aqui isso vence o interruptor. Ou seja, mesmo que AUTH_DESLIGADA vaze para
+ * as variaveis de ambiente do site publicado, a tranca continua de pe. Sem essa
+ * protecao, um flag esquecido publicaria sua carteira de leads aberta na
+ * internet.
+ */
+export function autenticacaoDesligada(): boolean {
+  if (process.env.AUTH_DESLIGADA !== 'true') return false;
+  if (process.env.NETLIFY === 'true') return false;
+  return true;
+}
+
 export function clienteNavegador() {
   const { url, chaveAnonima } = lerConfigSupabase();
   if (!url || !chaveAnonima) {

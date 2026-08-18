@@ -6,7 +6,7 @@
  * nova nao apague seu historico de contato com ele.
  */
 
-import type { Row } from 'postgres';
+import type { PendingQuery, Row } from 'postgres';
 import { db } from './index';
 import { haversineMeters, boundingBox, type LatLng } from '../geo';
 import {
@@ -342,7 +342,9 @@ export async function listarLeads(
    * concatenando texto. Assim todo valor continua sendo parametro e nao ha
    * caminho para injecao, mesmo com o filtro de busca livre digitado por voce.
    */
-  const condicoes = [];
+  // Tipado explicitamente porque agora e lido dentro de um fecho, e a inferencia
+  // por uso deixa de valer.
+  const condicoes: PendingQuery<Row[]>[] = [];
 
   if (!filtros.incluirComSite) condicoes.push(sql`l.tem_site_real = false`);
 
@@ -390,13 +392,20 @@ export async function listarLeads(
       break;
   }
 
-  const onde = condicoes.length
-    ? condicoes.reduce((acc, c) => sql`${acc} AND ${c}`)
-    : sql`true`;
+  /*
+   * Funcoes, e nao constantes. No driver um fragmento e um objeto de consulta de
+   * uso unico: reaproveitar a mesma instancia na contagem e na listagem abaixo
+   * funciona por sorte enquanto as duas sao sequenciais, e trava sem erro nenhum
+   * no dia em que virarem paralelas. Gerar um fragmento novo a cada uso remove a
+   * armadilha.
+   */
+  const onde = () =>
+    condicoes.length ? condicoes.reduce((acc, c) => sql`${acc} AND ${c}`) : sql`true`;
 
-  const juncaoBusca = filtros.searchId
-    ? sql`JOIN search_leads sl ON sl.place_id = l.place_id AND sl.search_id = ${filtros.searchId}`
-    : sql`LEFT JOIN search_leads sl ON false`;
+  const juncaoBusca = () =>
+    filtros.searchId
+      ? sql`JOIN search_leads sl ON sl.place_id = l.place_id AND sl.search_id = ${filtros.searchId}`
+      : sql`LEFT JOIN search_leads sl ON false`;
 
   const ORDENS = {
     relevancia: sql`l.score DESC, l.total_avaliacoes DESC NULLS LAST`,
@@ -416,8 +425,8 @@ export async function listarLeads(
     FROM leads l
     JOIN lead_crm c ON c.place_id = l.place_id
     LEFT JOIN enrichment e ON e.place_id = l.place_id
-    ${juncaoBusca}
-    WHERE ${onde}
+    ${juncaoBusca()}
+    WHERE ${onde()}
   `;
 
   const linhas = await sql`
@@ -428,8 +437,8 @@ export async function listarLeads(
     FROM leads l
     JOIN lead_crm c ON c.place_id = l.place_id
     LEFT JOIN enrichment e ON e.place_id = l.place_id
-    ${juncaoBusca}
-    WHERE ${onde}
+    ${juncaoBusca()}
+    WHERE ${onde()}
     ORDER BY ${ordem}
     LIMIT ${limite} OFFSET ${deslocamento}
   `;

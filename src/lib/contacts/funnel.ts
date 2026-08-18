@@ -85,144 +85,169 @@ export async function montarResultados(filtro: FiltroPainel = {}): Promise<Resul
   const sql = await db();
   const dias = filtro.dias ?? 90;
   const searchId = filtro.searchId ?? null;
+  const intervalo = `${dias} days`;
+  const bloqueados = [...STATUS_FORA_DA_FILA];
+  const esperaDias = `${COOLDOWN_PADRAO.diasBloqueio} days`;
 
   /*
-   * Recorte de leads. Quando ha searchId, tudo passa a olhar apenas os leads
-   * daquela varredura. O `${searchId} IS NULL OR` deixa o mesmo fragmento servir
-   * aos dois casos sem montar SQL diferente.
+   * O recorte por varredura e escrito por extenso em cada consulta, e nao
+   * montado como fragmento reaproveitavel.
+   *
+   * A razao e concreta e custou depuracao: no driver, cada `sql` interpolado e
+   * tambem um objeto de consulta. Dentro do Promise.all abaixo, as doze
+   * consultas externas nascem de uma vez e disputam as conexoes do pool com os
+   * proprios fragmentos que elas precisam para rodar. O resultado e um impasse
+   * silencioso: nada falha, nada retorna.
+   *
+   * `${searchId}::uuid IS NULL OR ...` deixa o mesmo texto servir aos dois casos,
+   * com e sem filtro de busca, sem gerar SQL diferente.
    */
-  const recorteLead = sql`(
-    ${searchId}::uuid IS NULL
-    OR l.place_id IN (SELECT place_id FROM search_leads WHERE search_id = ${searchId}::uuid)
-  )`;
 
-  const recorteCrm = sql`(
-    ${searchId}::uuid IS NULL
-    OR c.place_id IN (SELECT place_id FROM search_leads WHERE search_id = ${searchId}::uuid)
-  )`;
+  /*
+   * Em serie, e nao em paralelo.
+   *
+   * Disparar as doze de uma vez economizava cerca de 300 ms e custava
+   * confiabilidade: com o pool limitado, uma delas ficava presa na fila do
+   * cliente e nunca era despachada. Nao dava erro, nao havia lock no banco, o
+   * painel simplesmente nunca carregava. Serializar custa pouco e remove a
+   * classe inteira de problema.
+   */
+  const [contagensLead] = await sql<{ encontrados: string; sem_site: string; com_whatsapp: string }[]>`
+    SELECT
+      COUNT(*) AS encontrados,
+      COUNT(*) FILTER (WHERE l.tem_site_real = false) AS sem_site,
+      COUNT(*) FILTER (
+        WHERE l.tem_site_real = false
+          AND l.telefone_e164 IS NOT NULL
+          AND l.telefone_celular = true
+      ) AS com_whatsapp
+    FROM leads l
+    WHERE ${searchId}::uuid IS NULL
+       OR l.place_id IN (SELECT place_id FROM search_leads WHERE search_id = ${searchId}::uuid)
+  `;
 
-  const desde = sql`now() - ${`${dias} days`}::interval`;
-  const bloqueados = [...STATUS_FORA_DA_FILA];
+  const [contagensCrm] = await sql<{ responderam: string; negociando: string; fechados: string; perdidos: string }[]>`
+    SELECT
+      COUNT(*) FILTER (WHERE c.respondeu_em IS NOT NULL) AS responderam,
+      COUNT(*) FILTER (WHERE c.status = 'negociando') AS negociando,
+      COUNT(*) FILTER (WHERE c.status = 'fechado') AS fechados,
+      COUNT(*) FILTER (WHERE c.status = 'perdido') AS perdidos
+    FROM lead_crm c
+    WHERE ${searchId}::uuid IS NULL
+       OR c.place_id IN (SELECT place_id FROM search_leads WHERE search_id = ${searchId}::uuid)
+  `;
 
-  const [
-    [contagensLead],
-    [contagensCrm],
-    [enviadosLinha],
-    [recuperaveisLinha],
-    [prontosLinha],
-    [ritmoLinha],
-    faixasBrutas,
-    perdasBrutas,
-    tecnicasBrutas,
-    templatesBrutos,
-    nichosBrutos,
-    [agregados],
-  ] = await Promise.all([
-    sql<{ encontrados: string; sem_site: string; com_whatsapp: string }[]>`
-      SELECT
-        COUNT(*) AS encontrados,
-        COUNT(*) FILTER (WHERE l.tem_site_real = false) AS sem_site,
-        COUNT(*) FILTER (
-          WHERE l.tem_site_real = false
-            AND l.telefone_e164 IS NOT NULL
-            AND l.telefone_celular = true
-        ) AS com_whatsapp
-      FROM leads l WHERE ${recorteLead}
-    `,
-    sql<{ responderam: string; negociando: string; fechados: string; perdidos: string }[]>`
-      SELECT
-        COUNT(*) FILTER (WHERE c.respondeu_em IS NOT NULL) AS responderam,
-        COUNT(*) FILTER (WHERE c.status = 'negociando') AS negociando,
-        COUNT(*) FILTER (WHERE c.status = 'fechado') AS fechados,
-        COUNT(*) FILTER (WHERE c.status = 'perdido') AS perdidos
-      FROM lead_crm c WHERE ${recorteCrm}
-    `,
-    sql<{ n: string }[]>`
-      SELECT COUNT(DISTINCT cl.place_id) AS n
-      FROM contact_log cl
-      JOIN leads l ON l.place_id = cl.place_id
-      WHERE cl.entrega = 'enviado' AND cl.registrado_em >= ${desde} AND ${recorteLead}
-    `,
-    // Falhou por dado ruim e nunca chegou a ser abordado de verdade.
-    sql<{ n: string }[]>`
-      SELECT COUNT(DISTINCT cl.place_id) AS n
-      FROM contact_log cl
-      JOIN lead_crm c ON c.place_id = cl.place_id
-      WHERE cl.entrega IN ('numero_invalido', 'sem_whatsapp')
-        AND c.tentativas = 0
-        AND c.status NOT IN ('fechado', 'nao_perturbe')
-    `,
-    sql<{ n: string }[]>`
-      SELECT COUNT(*) AS n FROM lead_crm c
-      WHERE c.status <> ALL(${bloqueados})
-        AND c.tentativas > 0
-        AND c.tentativas < ${COOLDOWN_PADRAO.maxTentativas}
-        AND c.ultimo_contato_em IS NOT NULL
-        AND c.ultimo_contato_em < now() - ${`${COOLDOWN_PADRAO.diasBloqueio} days`}::interval
-        AND ${recorteCrm}
-    `,
-    sql<{ hoje: string; semana: string; mes: string }[]>`
-      SELECT
-        COUNT(*) FILTER (
-          WHERE (registrado_em AT TIME ZONE 'America/Sao_Paulo')::date
-              = (now() AT TIME ZONE 'America/Sao_Paulo')::date
-        ) AS hoje,
-        COUNT(*) FILTER (WHERE registrado_em >= now() - interval '7 days') AS semana,
-        COUNT(*) FILTER (WHERE registrado_em >= now() - interval '30 days') AS mes
-      FROM contact_log WHERE entrega = 'enviado'
-    `,
-    sql<{ faixa: string; n: string }[]>`
-      SELECT faixa, COUNT(*) AS n FROM leads l
-      WHERE l.tem_site_real = false AND ${recorteLead}
-      GROUP BY faixa
-    `,
-    sql<{ motivo_perda: string | null; n: string }[]>`
-      SELECT motivo_perda, COUNT(*) AS n FROM lead_crm c
-      WHERE c.status = 'perdido' AND ${recorteCrm}
-      GROUP BY motivo_perda
-    `,
-    sql<{ entrega: string; n: string }[]>`
-      SELECT entrega, COUNT(*) AS n FROM contact_log
-      WHERE entrega <> 'enviado' AND registrado_em >= ${desde}
-      GROUP BY entrega
-    `,
-    sql<{ template_id: string | null; template_nome: string | null; enviados: string; responderam: string }[]>`
-      SELECT cl.template_id, cl.template_nome,
-             COUNT(*) AS enviados,
-             COUNT(*) FILTER (
-               WHERE c.respondeu_em IS NOT NULL AND c.respondeu_em > cl.registrado_em
-             ) AS responderam
-      FROM contact_log cl
-      JOIN lead_crm c ON c.place_id = cl.place_id
-      WHERE cl.entrega = 'enviado' AND cl.registrado_em >= ${desde}
-      GROUP BY cl.template_id, cl.template_nome
-      ORDER BY enviados DESC
-    `,
-    sql<{ nicho: string; encontrados: string; sem_site: string; contatados: string; fechados: string }[]>`
-      SELECT s.nicho_label AS nicho,
-             COUNT(DISTINCT sl.place_id) AS encontrados,
-             COUNT(DISTINCT l.place_id) FILTER (WHERE l.tem_site_real = false) AS sem_site,
-             COUNT(DISTINCT c.place_id) FILTER (WHERE c.tentativas > 0) AS contatados,
-             COUNT(DISTINCT c.place_id) FILTER (WHERE c.status = 'fechado') AS fechados
-      FROM searches s
-      JOIN search_leads sl ON sl.search_id = s.id
-      JOIN leads l ON l.place_id = sl.place_id
-      JOIN lead_crm c ON c.place_id = sl.place_id
-      GROUP BY s.nicho_label
-      ORDER BY sem_site DESC
-      LIMIT 12
-    `,
-    sql<{ valor: string; dias_resposta: string | null; tentativas_fechar: string | null }[]>`
-      SELECT
-        COALESCE(SUM(valor_fechado), 0) AS valor,
-        AVG(EXTRACT(EPOCH FROM (respondeu_em - primeiro_contato_em)) / 86400)
-          FILTER (WHERE respondeu_em IS NOT NULL AND primeiro_contato_em IS NOT NULL)
-          AS dias_resposta,
-        AVG(tentativas) FILTER (WHERE status = 'fechado' AND tentativas > 0)
-          AS tentativas_fechar
-      FROM lead_crm c WHERE ${recorteCrm}
-    `,
-  ]);
+  const [enviadosLinha] = await sql<{ n: string }[]>`
+    SELECT COUNT(DISTINCT cl.place_id) AS n
+    FROM contact_log cl
+    WHERE cl.entrega = 'enviado'
+      AND cl.registrado_em >= now() - ${intervalo}::interval
+      AND (
+        ${searchId}::uuid IS NULL
+        OR cl.place_id IN (SELECT place_id FROM search_leads WHERE search_id = ${searchId}::uuid)
+      )
+  `;
+
+  // Falhou por dado ruim e nunca chegou a ser abordado de verdade.
+  const [recuperaveisLinha] = await sql<{ n: string }[]>`
+    SELECT COUNT(DISTINCT cl.place_id) AS n
+    FROM contact_log cl
+    JOIN lead_crm c ON c.place_id = cl.place_id
+    WHERE cl.entrega IN ('numero_invalido', 'sem_whatsapp')
+      AND c.tentativas = 0
+      AND c.status NOT IN ('fechado', 'nao_perturbe')
+  `;
+
+  const [prontosLinha] = await sql<{ n: string }[]>`
+    SELECT COUNT(*) AS n FROM lead_crm c
+    WHERE c.status <> ALL(${bloqueados})
+      AND c.tentativas > 0
+      AND c.tentativas < ${COOLDOWN_PADRAO.maxTentativas}
+      AND c.ultimo_contato_em IS NOT NULL
+      AND c.ultimo_contato_em < now() - ${esperaDias}::interval
+      AND (
+        ${searchId}::uuid IS NULL
+        OR c.place_id IN (SELECT place_id FROM search_leads WHERE search_id = ${searchId}::uuid)
+      )
+  `;
+
+  const [ritmoLinha] = await sql<{ hoje: string; semana: string; mes: string }[]>`
+    SELECT
+      COUNT(*) FILTER (
+        WHERE (registrado_em AT TIME ZONE 'America/Sao_Paulo')::date
+            = (now() AT TIME ZONE 'America/Sao_Paulo')::date
+      ) AS hoje,
+      COUNT(*) FILTER (WHERE registrado_em >= now() - interval '7 days') AS semana,
+      COUNT(*) FILTER (WHERE registrado_em >= now() - interval '30 days') AS mes
+    FROM contact_log WHERE entrega = 'enviado'
+  `;
+
+  const faixasBrutas = await sql<{ faixa: string; n: string }[]>`
+    SELECT faixa, COUNT(*) AS n FROM leads l
+    WHERE l.tem_site_real = false
+      AND (
+        ${searchId}::uuid IS NULL
+        OR l.place_id IN (SELECT place_id FROM search_leads WHERE search_id = ${searchId}::uuid)
+      )
+    GROUP BY faixa
+  `;
+
+  const perdasBrutas = await sql<{ motivo_perda: string | null; n: string }[]>`
+    SELECT motivo_perda, COUNT(*) AS n FROM lead_crm c
+    WHERE c.status = 'perdido'
+      AND (
+        ${searchId}::uuid IS NULL
+        OR c.place_id IN (SELECT place_id FROM search_leads WHERE search_id = ${searchId}::uuid)
+      )
+    GROUP BY motivo_perda
+  `;
+
+  const tecnicasBrutas = await sql<{ entrega: string; n: string }[]>`
+    SELECT entrega, COUNT(*) AS n FROM contact_log
+    WHERE entrega <> 'enviado' AND registrado_em >= now() - ${intervalo}::interval
+    GROUP BY entrega
+  `;
+
+  const templatesBrutos = await sql<{ template_id: string | null; template_nome: string | null; enviados: string; responderam: string }[]>`
+    SELECT cl.template_id, cl.template_nome,
+           COUNT(*) AS enviados,
+           COUNT(*) FILTER (
+             WHERE c.respondeu_em IS NOT NULL AND c.respondeu_em > cl.registrado_em
+           ) AS responderam
+    FROM contact_log cl
+    JOIN lead_crm c ON c.place_id = cl.place_id
+    WHERE cl.entrega = 'enviado' AND cl.registrado_em >= now() - ${intervalo}::interval
+    GROUP BY cl.template_id, cl.template_nome
+    ORDER BY enviados DESC
+  `;
+
+  const nichosBrutos = await sql<{ nicho: string; encontrados: string; sem_site: string; contatados: string; fechados: string }[]>`
+    SELECT s.nicho_label AS nicho,
+           COUNT(DISTINCT sl.place_id) AS encontrados,
+           COUNT(DISTINCT l.place_id) FILTER (WHERE l.tem_site_real = false) AS sem_site,
+           COUNT(DISTINCT c.place_id) FILTER (WHERE c.tentativas > 0) AS contatados,
+           COUNT(DISTINCT c.place_id) FILTER (WHERE c.status = 'fechado') AS fechados
+    FROM searches s
+    JOIN search_leads sl ON sl.search_id = s.id
+    JOIN leads l ON l.place_id = sl.place_id
+    JOIN lead_crm c ON c.place_id = sl.place_id
+    GROUP BY s.nicho_label
+    ORDER BY sem_site DESC
+    LIMIT 12
+  `;
+
+  const [agregados] = await sql<{ valor: string; dias_resposta: string | null; tentativas_fechar: string | null }[]>`
+    SELECT
+      COALESCE(SUM(valor_fechado), 0) AS valor,
+      AVG(EXTRACT(EPOCH FROM (respondeu_em - primeiro_contato_em)) / 86400)
+        FILTER (WHERE respondeu_em IS NOT NULL AND primeiro_contato_em IS NOT NULL)
+        AS dias_resposta,
+      AVG(tentativas) FILTER (WHERE status = 'fechado' AND tentativas > 0)
+        AS tentativas_fechar
+    FROM lead_crm c
+    WHERE ${searchId}::uuid IS NULL
+       OR c.place_id IN (SELECT place_id FROM search_leads WHERE search_id = ${searchId}::uuid)
+  `;
 
   const faixas: Contagem[] = ['muito_bom', 'bom', 'intermediario', 'ruim'].map((chave) => ({
     chave,
