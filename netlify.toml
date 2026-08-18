@@ -30,6 +30,19 @@
   # Google e a string do banco NAO estao nesta lista e continuam sendo varridas.
   SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_SUPABASE_URL,NEXT_PUBLIC_SUPABASE_ANON_KEY"
 
+  # O cache de compilacao do Turbopack fica fora da varredura.
+  #
+  # O Next resolve referencias a process.env durante o build, e o Turbopack
+  # guarda o resultado dessa compilacao em cache para as proximas execucoes. A
+  # chave do Google acaba dentro desses arquivos .sst, e a varredura acusa como
+  # se fosse vazamento.
+  #
+  # Nao e. Cache de build nao vai para o ar: o plugin do Next monta o deploy a
+  # partir da saida, nao do cache, e este caminho fica de fora do publicado. A
+  # varredura continua valendo para todo o resto, inclusive para o codigo do
+  # servidor e para os arquivos que o navegador baixa.
+  SECRETS_SCAN_OMIT_PATHS = ".next/cache/**,.netlify/.next/cache/**"
+
 # A varredura de um raio grande passa facil de 30 segundos. O limite padrao de
 # funcao no Netlify e 10s no plano gratuito e 26s nos pagos; o teto de
 # requisicoes por busca ja mantem a varredura curta, mas vale saber que raio
