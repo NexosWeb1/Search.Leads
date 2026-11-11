@@ -98,12 +98,17 @@ export const NICHOS: Nicho[] = [
 
   // Servicos profissionais
   { id: 'advocacia', label: 'Advocacia', grupo: 'Servicos profissionais', types: ['lawyer'] },
-  { id: 'contabilidade', label: 'Contabilidade e consultoria', grupo: 'Servicos profissionais', types: ['consultant', 'marketing_consultant'] },
+  { id: 'contabilidade', label: 'Contabilidade e consultoria', grupo: 'Servicos profissionais', types: ['consultant'] },
   { id: 'imobiliaria', label: 'Imobiliaria', grupo: 'Servicos profissionais', types: ['real_estate_agency'] },
   { id: 'seguros', label: 'Corretora de seguros', grupo: 'Servicos profissionais', types: ['insurance_agency'] },
   { id: 'turismo', label: 'Agencia de turismo', grupo: 'Servicos profissionais', types: ['travel_agency', 'tour_agency'] },
   { id: 'coworking', label: 'Coworking e escritorios', grupo: 'Servicos profissionais', types: ['coworking_space', 'business_center'] },
   { id: 'rh', label: 'Recursos humanos', grupo: 'Servicos profissionais', types: ['employment_agency'] },
+
+  // Parcerias: aqui o alvo nao e vender site, e achar agencias para parceria
+  // e terceirizacao. A Table A nao tem `advertising_agency` nem
+  // `marketing_agency`; agencias caem em `marketing_consultant`.
+  { id: 'agencia-marketing', label: 'Agencia de marketing', grupo: 'Parcerias', types: ['marketing_consultant'] },
 
   // Servicos gerais
   { id: 'lavanderia', label: 'Lavanderia', grupo: 'Servicos gerais', types: ['laundry'] },
